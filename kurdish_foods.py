@@ -199,3 +199,57 @@ def build_glossary_prompt() -> str:
         "give your own best-guess Kurdish name, a fitting emoji, and mark "
         "it clearly as not matched.\n\n" + "\n".join(lines)
     )
+
+
+# --- Fuzzy matching -----------------------------------------------------
+#
+# Gemini sometimes identifies a food correctly but phrases it slightly
+# differently than our glossary entry (e.g. "grilled chicken" vs our
+# "Chicken" alias, or a minor spelling variation). This catches those
+# cases in code, as a safety net independent of the model's own judgment,
+# and re-labels the food with our canonical Kurdish name + emoji so the
+# bot stays visually consistent no matter how Gemini phrased it.
+
+import difflib
+
+
+def _build_search_index():
+    index = []
+    for dish in KURDISH_FOOD_GLOSSARY:
+        index.append((dish["name"].lower(), dish))
+        for alias in dish["aliases"]:
+            index.append((alias.lower(), dish))
+    return index
+
+
+_SEARCH_INDEX = _build_search_index()
+_SEARCH_TERMS = [term for term, _ in _SEARCH_INDEX]
+
+
+def find_glossary_match(name: str, cutoff: float = 0.6):
+    """
+    Fuzzy-matches a food name (Kurdish or English, whatever Gemini wrote)
+    against every glossary name/alias. Returns the matched dish dict, or
+    None if nothing is close enough.
+
+    Checks substring containment first (catches short generic terms like
+    "chicken" inside a longer alias like "Kurdish grilled chicken"), then
+    falls back to a similarity ratio for spelling variations/typos.
+    """
+    query = (name or "").strip().lower()
+    if not query or len(query) < 3:
+        return None
+
+    for term, dish in _SEARCH_INDEX:
+        if query in term or term in query:
+            return dish
+
+    matches = difflib.get_close_matches(query, _SEARCH_TERMS, n=1, cutoff=cutoff)
+    if not matches:
+        return None
+
+    matched_term = matches[0]
+    for term, dish in _SEARCH_INDEX:
+        if term == matched_term:
+            return dish
+    return None

@@ -133,6 +133,22 @@ def format_result(result: dict) -> str:
     )
 
 
+NO_FOOD_MESSAGE = (
+    "🤔 نەمتوانی هیچ خواردنێکی ڕوونم لەم وێنەیەدا بدۆزمەوە.\n\n"
+    "ئەگەر وا دەزانیت خواردن تێیدایە، تکایە وێنەیەکی ڕوونتر بنێرەوە."
+)
+
+PHOTO_TIPS_MESSAGE = (
+    "❌ ببورە، نەمتوانی وێنەکە بە باشی شیکار بکەم.\n\n"
+    "تکایە ئەمانە تاقی بکەرەوە:\n"
+    "💡 لە شوێنێکی ڕووناکتر وێنە بگرە\n"
+    "🍽️ با هەموو پلێتەکە لەناو وێنەکەدا دیار بێت\n"
+    "📷 دەست لەرزۆکی کەمتر بێت (وێنەکە تیژ نەبێت)\n"
+    "🔍 زۆر نزیک زووم مەکە\n\n"
+    "پاشان دووبارە هەوڵبدەرەوە. 🙏"
+)
+
+
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     processing_msg = await update.message.reply_text("🔍 خواردنەکە شیکار دەکەم...")
@@ -143,18 +159,21 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         image_bytes = bytes(await photo_file.download_as_bytearray())
 
         result = estimate_calories(image_bytes, media_type="image/jpeg")
-        meal_id = log_meal(user_id, result)
 
-        await processing_msg.edit_text(
-            format_result(result),
-            reply_markup=build_feedback_keyboard(meal_id),
-        )
+        if result["status"] == "ok":
+            meal_id = log_meal(user_id, result)
+            await processing_msg.edit_text(
+                format_result(result),
+                reply_markup=build_feedback_keyboard(meal_id),
+            )
+        elif result["status"] == "no_food":
+            await processing_msg.edit_text(NO_FOOD_MESSAGE)
+        else:  # "failed" - technical failure, not a food-related answer
+            await processing_msg.edit_text(PHOTO_TIPS_MESSAGE)
 
     except Exception:
         logger.exception("Error processing photo")
-        await processing_msg.edit_text(
-            "❌ ببورە، هەڵەیەک ڕوویدا. تکایە دووبارە هەوڵبدەرەوە."
-        )
+        await processing_msg.edit_text(PHOTO_TIPS_MESSAGE)
 
 
 async def handle_feedback(update: Update, context: ContextTypes.DEFAULT_TYPE):

@@ -9,6 +9,14 @@ Everything is already written. You just need two keys — both free — paste th
 4. Every result has 👍/👎 buttons so users can flag wrong estimates.
 5. `/today` and `/week` show running totals including macros.
 
+## Reliability fixes (this update)
+- **Root cause of the "Unknown / 0 kcal" bug found and fixed**: `gemini-2.5-flash` spends part of its output token budget on internal "thinking" before writing the answer. The old `max_output_tokens=800` wasn't enough headroom, so on some photos the JSON got cut off mid-way, failed to parse, and silently fell back to a fake "Unknown, 0 kcal" result — indistinguishable from a real answer. Fixed by raising the token budget, explicitly capping the thinking budget, and adding a one-time automatic retry with a stricter prompt if parsing still fails.
+- **Three distinct outcomes now, not one fallback**: a real result, a genuine "no food visible" message, or a "couldn't analyze — try a clearer photo" message with concrete tips (lighting, whole plate, less blur, less zoom). Only real results get logged to your totals.
+- **Tolerant JSON parsing**: handles markdown-fenced responses and stray text before/after the JSON, not just perfectly clean output.
+- **Fuzzy glossary matching in code** (`kurdish_foods.find_glossary_match`), independent of the model's own judgment — catches things like "Grilled chicken" matching your "مریشکی برژاو" entry even when Gemini doesn't word it exactly the same way, and relabels it with your canonical name/emoji.
+- **Confidence is now scoped correctly**: the prompt explicitly says item count is never itself a reason for lower confidence — only image clarity, visibility, and identification/portion certainty are.
+- **`requirements.txt`** bumped `google-genai` to `>=1.0.0` — the thinking-budget feature had known instability in earlier SDK versions.
+
 ## What changed in this polish pass
 - **Multi-food detection**: one photo with several dishes now gets each item identified, portioned, and calculated separately, with a total at the end.
 - **Natural Kurdish everywhere**: every UI string and every AI-generated sentence is now written (and prompted for) as everyday spoken Sorani, not literal/machine-translated phrasing.
