@@ -34,27 +34,23 @@ logger = logging.getLogger(__name__)
 
 WELCOME_MESSAGE = (
     "سڵاو! 👋\n\n"
-    "من بۆتی ژمارەی کالۆری و بژایی مە. تەنها وێنەیەکی خواردنەکەت بنێرە، "
-    "منیش خێرا کالۆری، پرۆتین، کاربۆهایدرەیت و چەوری‌ی خواردنەکەت "
-    "بە کوردی بۆت دەنێرمەوە — بێ بەرامبەر و بۆ هەمیشە.\n\n"
+    "من یارمەتیدەری تۆم بۆ ژماردنی کالۆری — تەنها وێنەیەکی خواردنەکەت بنێرە، "
+    "ئەگەر چەند خواردنێک پێکەوە بن یەکە‌یەک هەڵیان دەبژێرم، پاشان کالۆری و "
+    "پرۆتین و کاربۆهایدرەیت و چەوری‌یان بۆ دەخەمە ڕوو — بە کوردی، بێ "
+    "بەرامبەر، بۆ هەمیشە.\n\n"
     "فەرمانەکان:\n"
     "📸 تەنها وێنە بنێرە بۆ شیکردنەوە\n"
     "/today - کۆی ئەمڕۆ\n"
     "/week - کۆی ئەم هەفتەیە\n\n"
-    "⚠️ تێبینی: هەموو ژمارەکان هەڵسەنگاندنێکن، دەکرێت بەگوێرەی قەبارەی "
-    "خواردن و شێوازی چێشتلێنان جیاواز بن — نەک وردی تەواو."
+    "⚠️ هەموو ژمارەکان هەڵسەنگاندنن، نەک وردی تەواو."
 )
-
-CONFIDENCE_LABEL = {
-    "high": "🎯 دڵنیایی بەرز",
-    "medium": "🎯 دڵنیایی مامناوەند",
-    "low": "🎯 دڵنیایی نزم — تکایە پشتڕاستی بکەوە",
-}
 
 DISCLAIMER = (
-    "⚠️ ئەمانە هەڵسەنگاندنن، دەکرێت بەگوێرەی قەبارەی خواردن و "
-    "شێوازی چێشتلێنان جیاواز بن."
+    "⚠️ ئەم ئەنجامانە خەمڵاندنن و لەوانەیە بەپێی قەبارەی خواردن و "
+    "شێوازی ئامادەکردن کەمێک جیاواز بن."
 )
+
+SEPARATOR = "――――――――――――"
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -68,9 +64,9 @@ async def today(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         f"📊 کۆی ئەمڕۆ\n"
         f"🔥 {totals['kcal']} کالۆری\n"
-        f"💪 {totals['protein_g']}g پرۆتین\n"
-        f"🍚 {totals['carbs_g']}g کاربۆهایدرەیت\n"
-        f"🥑 {totals['fat_g']}g چەوری\n\n"
+        f"💪 {totals['protein_g']} g پرۆتین\n"
+        f"🍚 {totals['carbs_g']} g کاربۆهایدرەیت\n"
+        f"🥑 {totals['fat_g']} g چەوری\n\n"
         f"🍽️ {count} خواردن تۆمارکراوە"
     )
 
@@ -81,10 +77,10 @@ async def week(update: Update, context: ContextTypes.DEFAULT_TYPE):
     avg_kcal = totals["kcal"] // 7
     await update.message.reply_text(
         f"📊 کۆی ئەم هەفتەیە\n"
-        f"🔥 {totals['kcal']} کالۆری (تێکڕای رۆژانە: {avg_kcal})\n"
-        f"💪 {totals['protein_g']}g پرۆتین\n"
-        f"🍚 {totals['carbs_g']}g کاربۆهایدرەیت\n"
-        f"🥑 {totals['fat_g']}g چەوری"
+        f"🔥 {totals['kcal']} کالۆری (تێکڕای ڕۆژانە: {avg_kcal})\n"
+        f"💪 {totals['protein_g']} g پرۆتین\n"
+        f"🍚 {totals['carbs_g']} g کاربۆهایدرەیت\n"
+        f"🥑 {totals['fat_g']} g چەوری"
     )
 
 
@@ -99,22 +95,40 @@ def build_feedback_keyboard(meal_id: int) -> InlineKeyboardMarkup:
     )
 
 
-def format_result(result: dict) -> str:
-    confidence_text = CONFIDENCE_LABEL.get(
-        result.get("confidence", "low"), CONFIDENCE_LABEL["low"]
-    )
-    matched_note = (
-        " ✅ لە لیستی خواردنە کوردیەکان" if result.get("matched_glossary") else ""
-    )
+def _format_food_block(food: dict) -> str:
     return (
-        f"🍲 {result.get('food_name_kurdish', 'نەناسراو')}"
-        f" ({result.get('food_name_english', '')})\n"
-        f"🔥 {result.get('estimated_kcal', 0)} کالۆری\n"
-        f"💪 {result.get('protein_g', 0)}g پرۆتین\n"
-        f"🍚 {result.get('carbs_g', 0)}g کاربۆهایدرەیت\n"
-        f"🥑 {result.get('fat_g', 0)}g چەوری\n"
-        f"{confidence_text}{matched_note}\n\n"
-        f"{result.get('note_kurdish', '')}\n"
+        f"{food['emoji']} {food['name_kurdish']} — {food['portion_kurdish']}\n\n"
+        f"🔥 کالۆری: {food['kcal']}\n"
+        f"💪 پرۆتین: {food['protein_g']} g\n"
+        f"🍚 کاربۆهایدرەیت: {food['carbs_g']} g\n"
+        f"🥑 چەوری: {food['fat_g']} g"
+    )
+
+
+def format_result(result: dict) -> str:
+    foods = result["foods"]
+
+    food_blocks = "\n\n".join(_format_food_block(f) for f in foods)
+
+    # Only show a totals section when there's actually more than one item -
+    # otherwise it would just repeat the single food block above it.
+    totals_block = ""
+    if len(foods) > 1:
+        totals_block = (
+            f"\n\n{SEPARATOR}\n"
+            f"📊 کۆی گشتی:\n"
+            f"🔥 کالۆری: {result['total_kcal']}\n"
+            f"💪 پرۆتین: {result['total_protein_g']} g\n"
+            f"🍚 کاربۆهایدرەیت: {result['total_carbs_g']} g\n"
+            f"🥑 چەوری: {result['total_fat_g']} g"
+        )
+
+    return (
+        f"{food_blocks}"
+        f"{totals_block}\n\n"
+        f"🎯 ئاستی دڵنیابوونم لە ئەنجامەکە: {result['confidence']}\n\n"
+        f"💬 کورتە تێبینی:\n{result['note_kurdish']}\n\n"
+        f"{result['insight_kurdish']}\n\n"
         f"{DISCLAIMER}"
     )
 
@@ -158,7 +172,7 @@ async def handle_feedback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     thanks = (
         "✅ سوپاس! ئەمە یارمەتیمان دەدات باشتر بین."
         if choice == "correct"
-        else "📝 سوپاس بۆ ئاگادارکردنەوە! ئەمە یارمەتیمان دەدات لیستەکە باشتر بکەین."
+        else "📝 سوپاس بۆ ئاگادارکردنەوە! یارمەتیمان دەدات باشتری بکەین."
     )
 
     # Keep the original result text, drop the buttons, append a thank-you line

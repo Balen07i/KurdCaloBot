@@ -2,7 +2,14 @@
 #
 # Minimal SQLite storage - one file, no server needed. Good enough for an
 # MVP up to several thousand users. Migrate to Postgres later if you scale.
+#
+# NOTE ON MIGRATION: this version adds new columns (foods_json, note,
+# insight) to support multi-food results. init_db() adds them safely with
+# ALTER TABLE if they don't already exist, so this is safe to deploy on
+# top of an already-running database (like your live Railway instance)
+# without losing existing data or crashing on startup.
 
+import json
 import sqlite3
 from datetime import datetime, timedelta
 
@@ -29,31 +36,55 @@ def init_db():
         )
         """
     )
+
+    # Safe migration: add any columns that didn't exist in earlier versions
+    # of this table (e.g. on an already-deployed database) without touching
+    # existing data.
+    existing_cols = {row[1] for row in conn.execute("PRAGMA table_info(meals)")}
+    new_columns = {
+        "foods_json": "TEXT",
+        "note_kurdish": "TEXT",
+        "insight_kurdish": "TEXT",
+    }
+    for col, col_type in new_columns.items():
+        if col not in existing_cols:
+            conn.execute(f"ALTER TABLE meals ADD COLUMN {col} {col_type}")
+
     conn.commit()
     conn.close()
 
 
 def log_meal(user_id: int, result: dict) -> int:
-    """Inserts a meal and returns its row id (used for feedback buttons)."""
+    """
+    Inserts a meal (one row per photo, possibly containing several foods)
+    and returns its row id (used for feedback buttons).
+    """
+    foods = result.get("foods", [])
+    food_summary = "، ".join(f["name_kurdish"] for f in foods) or "نەناسراو"
+    any_matched = any(f.get("matched_glossary") for f in foods)
+
     conn = sqlite3.connect(DB_PATH)
     cur = conn.execute(
         """
         INSERT INTO meals (user_id, food_name_kurdish, food_name_english,
                             kcal, protein_g, carbs_g, fat_g, confidence,
-                            matched_glossary, feedback, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)
+                            matched_glossary, feedback, created_at,
+                            foods_json, note_kurdish, insight_kurdish)
+        VALUES (?, ?, '', ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?)
         """,
         (
             user_id,
-            result.get("food_name_kurdish", ""),
-            result.get("food_name_english", ""),
-            result.get("estimated_kcal", 0),
-            result.get("protein_g", 0),
-            result.get("carbs_g", 0),
-            result.get("fat_g", 0),
-            result.get("confidence", "low"),
-            int(bool(result.get("matched_glossary", False))),
+            food_summary,
+            result.get("total_kcal", 0),
+            result.get("total_protein_g", 0),
+            result.get("total_carbs_g", 0),
+            result.get("total_fat_g", 0),
+            result.get("confidence", "نزم"),
+            int(bool(any_matched)),
             datetime.utcnow().isoformat(),
+            json.dumps(foods, ensure_ascii=False),
+            result.get("note_kurdish", ""),
+            result.get("insight_kurdish", ""),
         ),
     )
     conn.commit()

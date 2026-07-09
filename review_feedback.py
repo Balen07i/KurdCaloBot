@@ -4,6 +4,8 @@
 # Prints recent 👎 "wrong" feedback so you know what to fix or add in
 # kurdish_foods.py. Not part of the bot itself - just a lookup tool for you.
 
+import json
+
 from storage import get_wrong_feedback_log
 
 rows = get_wrong_feedback_log()
@@ -13,12 +15,18 @@ if not rows:
 else:
     print(f"{len(rows)} flagged result(s) to review:\n")
     for r in rows:
-        print(
-            f"- {r['created_at']} | guessed: {r['food_name_kurdish']} "
-            f"({r['food_name_english']}) | {r['kcal']} kcal | "
-            f"matched_glossary={bool(r['matched_glossary'])}"
+        foods = json.loads(r["foods_json"] or "[]")
+        food_list = ", ".join(
+            f"{f['emoji']} {f['name_kurdish']} ({f['portion_kurdish']}, "
+            f"{f['kcal']} kcal, matched={f['matched_glossary']})"
+            for f in foods
         )
+        print(f"- {r['created_at']}")
+        print(f"  foods: {food_list or r['food_name_kurdish']}")
+        print(f"  total: {r['kcal']} kcal | confidence: {r['confidence']}")
+        print()
     print(
-        "\nFor each of these: if it's a Kurdish dish not in your glossary "
-        "yet, add it to kurdish_foods.py with the correct name/kcal/macros."
+        "For each of these: if it's a Kurdish dish not in your glossary yet, "
+        "or matched incorrectly, add/fix it in kurdish_foods.py with the "
+        "correct name/emoji/kcal/macros."
     )
