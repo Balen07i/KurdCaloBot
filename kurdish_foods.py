@@ -172,7 +172,226 @@ KURDISH_FOOD_GLOSSARY = [
         "aliases": ["chickpea based dish", "Xwarina naskek"],
         "kcal": 300, "protein_g": 12, "carbs_g": 45, "fat_g": 8,
     },
+
+    # --- Drinks ------------------------------------------------------
+    {
+        "name": "دۆو", "emoji": "🥛",
+        "aliases": ["Dogh", "Ayran", "yogurt drink", "salted yogurt drink"],
+        "kcal": 60, "protein_g": 3, "carbs_g": 5, "fat_g": 2,
+    },
+    {
+        "name": "شەربەت", "emoji": "🧃",
+        "aliases": ["Sherbet", "Kurdish fruit syrup drink"],
+        "kcal": 120, "protein_g": 0, "carbs_g": 30, "fat_g": 0,
+    },
+    {
+        "name": "قاوەی کوردی", "emoji": "☕",
+        "aliases": ["Kurdish coffee", "qawa"],
+        "kcal": 5, "protein_g": 0, "carbs_g": 1, "fat_g": 0,
+    },
+    {
+        "name": "شیری گەرم", "emoji": "🥛",
+        "aliases": ["warm milk", "milk"],
+        "kcal": 150, "protein_g": 8, "carbs_g": 12, "fat_g": 8,
+    },
+    {
+        "name": "ئاوی هەنار", "emoji": "🍹",
+        "aliases": ["pomegranate juice"],
+        "kcal": 130, "protein_g": 1, "carbs_g": 32, "fat_g": 0,
+    },
+    {
+        "name": "شەربەتی لیمۆ", "emoji": "🍋",
+        "aliases": ["lemonade", "lemon drink"],
+        "kcal": 100, "protein_g": 0, "carbs_g": 26, "fat_g": 0,
+    },
+
+    # --- Desserts ------------------------------------------------------
+    {
+        "name": "کنافە", "emoji": "🍮",
+        "aliases": ["Knafeh", "Kunafa"],
+        "kcal": 400, "protein_g": 8, "carbs_g": 50, "fat_g": 20,
+    },
+    {
+        "name": "زەردە", "emoji": "🍮",
+        "aliases": ["Zerde", "saffron rice pudding"],
+        "kcal": 250, "protein_g": 3, "carbs_g": 50, "fat_g": 5,
+    },
+    {
+        "name": "شامی", "emoji": "🍪",
+        "aliases": ["Shami sweet", "Kurdish semolina cookie"],
+        "kcal": 180, "protein_g": 3, "carbs_g": 24, "fat_g": 9,
+    },
+    {
+        "name": "بەستەنی", "emoji": "🍦",
+        "aliases": ["Bastani", "Kurdish ice cream"],
+        "kcal": 220, "protein_g": 4, "carbs_g": 28, "fat_g": 10,
+    },
+
+    # --- Fruits ------------------------------------------------------
+    {
+        "name": "هەنار", "emoji": "🍒",
+        "aliases": ["pomegranate", "whole pomegranate or seeds"],
+        "kcal": 105, "protein_g": 1, "carbs_g": 26, "fat_g": 1,
+    },
+    {
+        "name": "سێو", "emoji": "🍎",
+        "aliases": ["apple"],
+        "kcal": 95, "protein_g": 0, "carbs_g": 25, "fat_g": 0,
+    },
+    {
+        "name": "پرتەقاڵ", "emoji": "🍊",
+        "aliases": ["orange"],
+        "kcal": 65, "protein_g": 1, "carbs_g": 16, "fat_g": 0,
+    },
+    {
+        "name": "قەوون", "emoji": "🍈",
+        "aliases": ["melon"],
+        "kcal": 60, "protein_g": 1, "carbs_g": 15, "fat_g": 0,
+    },
+    {
+        "name": "زبەش", "emoji": "🍉",
+        "aliases": ["watermelon"],
+        "kcal": 85, "protein_g": 2, "carbs_g": 21, "fat_g": 0,
+    },
+    {
+        "name": "ترێ", "emoji": "🍇",
+        "aliases": ["grapes"],
+        "kcal": 100, "protein_g": 1, "carbs_g": 27, "fat_g": 0,
+    },
+    {
+        "name": "قەیسی", "emoji": "🍑",
+        "aliases": ["apricot"],
+        "kcal": 50, "protein_g": 1, "carbs_g": 12, "fat_g": 0,
+    },
+    {
+        "name": "موز", "emoji": "🍌",
+        "aliases": ["banana"],
+        "kcal": 105, "protein_g": 1, "carbs_g": 27, "fat_g": 0,
+    },
+
+    # --- Vegetables ----------------------------------------------------
+    {
+        "name": "خیار و تەماتە", "emoji": "🥗",
+        "aliases": ["cucumber tomato salad", "shirazi salad"],
+        "kcal": 60, "protein_g": 2, "carbs_g": 10, "fat_g": 2,
+    },
+    {
+        "name": "پیاز", "emoji": "🧅",
+        "aliases": ["onion", "raw or cooked onion"],
+        "kcal": 45, "protein_g": 1, "carbs_g": 10, "fat_g": 0,
+    },
+    {
+        "name": "بادەمجان برژاو", "emoji": "🍆",
+        "aliases": ["grilled eggplant", "roasted eggplant"],
+        "kcal": 100, "protein_g": 2, "carbs_g": 15, "fat_g": 5,
+    },
+    {
+        "name": "بامیە", "emoji": "🥘",
+        "aliases": ["okra stew", "bamya"],
+        "kcal": 180, "protein_g": 8, "carbs_g": 20, "fat_g": 8,
+    },
+    {
+        "name": "فاسۆلیا", "emoji": "🫘",
+        "aliases": ["green bean stew", "fasolia"],
+        "kcal": 200, "protein_g": 10, "carbs_g": 22, "fat_g": 8,
+    },
+
+    # --- Sauces, oils & condiments --------------------------------------
+    # NOTE: سرکەی هەنار (pomegranate molasses) and سۆسی تەماتە (tomato/red
+    # sauce) are visually similar (both dark reddish, glossy, poured over
+    # food) but nutritionally different - see CONFUSABLE_PAIRS below,
+    # which teaches the model to actively distinguish them.
+    {
+        "name": "سرکەی هەنار", "emoji": "🍯",
+        "aliases": ["pomegranate molasses", "narsharab", "sour pomegranate sauce"],
+        "kcal": 45, "protein_g": 0, "carbs_g": 11, "fat_g": 0,
+    },
+    {
+        "name": "سۆسی تەماتە", "emoji": "🍅",
+        "aliases": ["tomato sauce", "red sauce", "sosi sur"],
+        "kcal": 30, "protein_g": 1, "carbs_g": 6, "fat_g": 0,
+    },
+    {
+        "name": "دۆنی زەیتوون", "emoji": "🫒",
+        "aliases": ["olive oil", "cooking oil drizzle"],
+        "kcal": 120, "protein_g": 0, "carbs_g": 0, "fat_g": 14,
+    },
+    {
+        "name": "کەرێ", "emoji": "🧈",
+        "aliases": ["butter", "ghee", "run"],
+        "kcal": 100, "protein_g": 0, "carbs_g": 0, "fat_g": 11,
+    },
+    {
+        "name": "تەهینە", "emoji": "🥣",
+        "aliases": ["tahini", "sesame paste"],
+        "kcal": 90, "protein_g": 3, "carbs_g": 3, "fat_g": 8,
+    },
+
+    # --- Bread & staples -------------------------------------------------
+    {
+        "name": "سامون", "emoji": "🥖",
+        "aliases": ["samoon", "Iraqi Kurdish bread roll"],
+        "kcal": 180, "protein_g": 6, "carbs_g": 34, "fat_g": 2,
+    },
+    {
+        "name": "برنجی جوانی", "emoji": "🍚",
+        "aliases": ["long grain rice", "basmati rice"],
+        "kcal": 260, "protein_g": 5, "carbs_g": 50, "fat_g": 5,
+    },
+
+    # --- Meats ---------------------------------------------------------
+    {
+        "name": "گۆشتی بەرخ برژاو", "emoji": "🍖",
+        "aliases": ["grilled lamb", "roasted lamb"],
+        "kcal": 430, "protein_g": 34, "carbs_g": 0, "fat_g": 32,
+    },
+    {
+        "name": "ماسی برژاو", "emoji": "🐟",
+        "aliases": ["grilled fish", "masgouf"],
+        "kcal": 300, "protein_g": 35, "carbs_g": 0, "fat_g": 17,
+    },
+    {
+        "name": "هێلکە", "emoji": "🥚",
+        "aliases": ["egg", "fried or boiled egg"],
+        "kcal": 90, "protein_g": 6, "carbs_g": 1, "fat_g": 7,
+    },
 ]
+
+# --- Commonly confused pairs -----------------------------------------
+#
+# Foods that look visually similar in a photo but are nutritionally
+# different. Injected into the prompt so the model actively looks for the
+# distinguishing visual cue instead of guessing - and if it genuinely
+# can't tell, this is exactly when it should offer alternative estimates
+# instead of picking one at random.
+CONFUSABLE_PAIRS = [
+    {
+        "a": "سرکەی هەنار (پرتەقاڵی تاریک، سووکتر، شەفاف)",
+        "b": "سۆسی تەماتە (سووری تۆخ، semi-opaque, تامی تەماتەیی)",
+        "hint": "سرکەی هەنار زۆرجار تامی تووڕشتر و ڕەنگی تۆختر و شەفافترە، سۆسی تەماتە زیاتر سووری ڕوون و ئۆپەیکە",
+    },
+    {
+        "a": "دۆو (سپی، شل، لە گلاسدا)",
+        "b": "ماست (سپی، چڕ، لە کاسەدا)",
+        "hint": "دۆو شلترە و زۆرجار لە گلاسێکدایە، ماست چڕترە و لە کاسەیەکدایە",
+    },
+    {
+        "a": "کەرێ (زەردی کاڵ، سۆلید یان تواوە)",
+        "b": "دۆنی زەیتوون (زەردی تۆخ یان سەوز، شل و درەوشاوە)",
+        "hint": "کەرێ زۆرجار وەک پارچەیەکی سۆلید یان تواوە دیارە، دۆنی زەیتوون هەمیشە شلە و درەوشاوەیە",
+    },
+]
+
+
+def build_confusable_prompt() -> str:
+    lines = [f"- {p['a']} vs {p['b']}: {p['hint']}" for p in CONFUSABLE_PAIRS]
+    return (
+        "Pairs of foods that are easy to visually confuse - actively look "
+        "for the distinguishing visual cue before deciding, and if you "
+        "genuinely can't tell them apart, this is exactly the case where "
+        "you should offer alternative estimates instead of guessing:\n"
+        + "\n".join(lines)
+    )
 
 
 def build_glossary_prompt() -> str:

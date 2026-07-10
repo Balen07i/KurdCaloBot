@@ -1,12 +1,14 @@
 # review_feedback.py
 #
 # Run this anytime with: python review_feedback.py
-# Prints recent 👎 "wrong" feedback so you know what to fix or add in
-# kurdish_foods.py. Not part of the bot itself - just a lookup tool for you.
+# Prints recent 👎 "wrong" feedback (what to fix in kurdish_foods.py) and
+# recent user-submitted corrections (the free "learning" loop - these are
+# already being reused automatically in every future prompt, this is just
+# for your own visibility into what's been learned).
 
 import json
 
-from storage import get_wrong_feedback_log
+from storage import get_all_corrections, get_wrong_feedback_log
 
 rows = get_wrong_feedback_log()
 
@@ -28,5 +30,19 @@ else:
     print(
         "For each of these: if it's a Kurdish dish not in your glossary yet, "
         "or matched incorrectly, add/fix it in kurdish_foods.py with the "
-        "correct name/emoji/kcal/macros."
+        "correct name/emoji/kcal/macros.\n"
+    )
+
+print("=" * 50)
+corrections = get_all_corrections()
+if not corrections:
+    print("No user corrections submitted yet.")
+else:
+    print(f"{len(corrections)} learned correction(s) (already active in every prompt):\n")
+    for c in corrections:
+        print(f'  "{c["wrong_name"]}" -> {c["correct_name_kurdish"]}')
+    print(
+        "\nIf any of these show up often, consider adding them as a proper "
+        "glossary entry in kurdish_foods.py instead - it's more reliable "
+        "than relying on the correction list forever."
     )
