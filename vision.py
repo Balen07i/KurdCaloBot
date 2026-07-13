@@ -6,35 +6,20 @@
 # nutrition insight.
 #
 # Uses Google's free Gemini API tier - no paid service anywhere in here.
-#
-# RESILIENCE NOTE: the google-genai SDK has its own built-in retry, but it
-# has a known bug (as of writing) where it ignores the server's suggested
-# retry-after delay and just uses fixed backoff - which wastes retries
-# under real rate-limit pressure. We disable the SDK's built-in retry
-# (attempts=1) and do our own below, so we have full control over backoff,
-# Retry-After handling, and logging.
 
-import io
 import json
 import logging
 import os
 import re
-import time
 
 from google import genai
-from google.genai import errors as genai_errors
 from google.genai import types
 
 from kurdish_foods import build_confusable_prompt, build_glossary_prompt, find_glossary_match
 
 logger = logging.getLogger(__name__)
 
-client = genai.Client(
-    api_key=os.environ["GEMINI_API_KEY"],
-    http_options=types.HttpOptions(
-        retry_options=types.HttpRetryOptions(attempts=1)  # we handle retries ourselves
-    ),
-)
+client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
 
 MODEL_NAME = "gemini-2.5-flash"  # fast, high-quality vision, generous free tier
 
@@ -47,55 +32,12 @@ MODEL_NAME = "gemini-2.5-flash"  # fast, high-quality vision, generous free tier
 THINKING_BUDGET = 1200
 MAX_OUTPUT_TOKENS = 3500
 
-# Retry tuning. RETRYABLE_STATUS_CODES per Google's own troubleshooting
-# guidance (429 rate limit, 408/500/502/503/504 transient server issues).
-# 400/401/403/404 are NOT retried - those mean something is wrong with the
-# request itself (bad key, bad payload) and retrying won't help.
-MAX_ATTEMPTS = 4
-RETRYABLE_STATUS_CODES = {408, 429, 500, 502, 503, 504}
-BASE_BACKOFF_SECONDS = 2.0
-MAX_BACKOFF_SECONDS = 30.0
-
-# Image optimization: shrinks upload size and vision-token cost without a
-# meaningful accuracy loss - 1024px on the long side is well above what's
-# needed to identify food/portions, and 85% JPEG quality is visually
-# lossless for this purpose.
-MAX_IMAGE_DIMENSION = 1024
-JPEG_QUALITY = 85
-
 INSIGHT_STYLE_EXAMPLES = """\
 - 💪 ئەم خواردنە سەرچاوەیەکی باشی پرۆتینە.
 - 🥗 زیادکردنی سەوزە فایبەری خواردنەکەت زیاد دەکات.
 - 🔥 بۆ کێش زیادکردن زۆر گونجاوە.
 - ⚖️ ئەگەر ئامانجت کەمکردنەوەی کێشە، واباشە قەبارەی برنج کەمتر بێت.
 - 💧 بیرت نەچێت لەگەڵ ئەم خواردنە ئاوی تەواو بخۆیت."""
-
-
-def optimize_image(image_bytes: bytes) -> bytes:
-    """
-    Resizes to a max 1024px on the long side and re-encodes as JPEG q85.
-    Falls back to the original bytes if Pillow can't process it for any
-    reason (never block a scan over an optimization failure).
-    """
-    try:
-        from PIL import Image
-
-        img = Image.open(io.BytesIO(image_bytes))
-        if img.mode not in ("RGB", "L"):
-            img = img.convert("RGB")
-
-        longest_side = max(img.size)
-        if longest_side > MAX_IMAGE_DIMENSION:
-            scale = MAX_IMAGE_DIMENSION / longest_side
-            new_size = (round(img.width * scale), round(img.height * scale))
-            img = img.resize(new_size, Image.LANCZOS)
-
-        buffer = io.BytesIO()
-        img.save(buffer, format="JPEG", quality=JPEG_QUALITY, optimize=True)
-        return buffer.getvalue()
-    except Exception:
-        logger.exception("[IMAGE_OPTIMIZE] Failed to optimize image, using original")
-        return image_bytes
 
 
 def _build_corrections_prompt(corrections: list[dict]) -> str:
@@ -280,97 +222,36 @@ def _extract_json(raw_text: str):
     return None
 
 
-_RETRY_AFTER_PATTERN = re.compile(r"retry in (\d+(?:\.\d+)?)s", re.IGNORECASE)
-
-
-def _extract_retry_after_seconds(exc: Exception) -> float | None:
-    """
-    The google-genai SDK doesn't cleanly expose the server's suggested
-    retry delay as a structured field, but 429 error messages usually
-    contain it as text (e.g. "...Please retry in 53.0s."). Best-effort
-    extraction from the message; falls back to None (caller uses
-    exponential backoff instead) if it's not present.
-    """
-    match = _RETRY_AFTER_PATTERN.search(str(exc))
-    if match:
-        return float(match.group(1))
-    return None
-
-
-def _classify_and_log(exc: Exception, attempt: int) -> tuple[bool, float | None]:
-    """
-    Logs the failure with a clear, grep-able tag and returns
-    (is_retryable, suggested_wait_seconds).
-    """
-    if isinstance(exc, genai_errors.APIError):
-        code = exc.code
-        if code == 429:
-            wait = _extract_retry_after_seconds(exc)
-            logger.warning(
-                "[RATE_LIMIT] Gemini 429 on attempt %d, server suggests %s: %s",
-                attempt, f"{wait}s" if wait else "no delay given", exc,
-            )
-            return True, wait
-        if code in RETRYABLE_STATUS_CODES:
-            logger.warning("[SERVER_ERROR] Gemini %d on attempt %d: %s", code, attempt, exc)
-            return True, None
-        logger.error("[SDK_ERROR] Non-retryable Gemini error %s on attempt %d: %s", code, attempt, exc)
-        return False, None
-
-    if isinstance(exc, (TimeoutError, ConnectionError)):
-        logger.warning("[TIMEOUT] Network timeout/connection error on attempt %d: %s", attempt, exc)
-        return True, None
-
-    logger.exception("[UNEXPECTED] Unhandled exception on attempt %d", attempt)
-    return True, None  # unknown errors get one benefit-of-the-doubt retry cycle
-
-
 def estimate_calories(
     image_bytes: bytes, media_type: str = "image/jpeg", corrections: list[dict] | None = None
 ) -> dict:
     """
-    Makes EXACTLY ONE logical analysis per call (retries below are for
-    resilience against transient failures, not duplicate work - a photo
-    that succeeds on attempt 1 never triggers attempt 2).
-
     Returns a dict with a "status" key:
-      - "ok": normal result (see _finalize_result for full shape)
+      - "ok": normal result (see _finalize_result for full shape, includes
+        an "alternatives" list which is usually empty)
       - "no_food": Gemini determined the photo genuinely has no food
-      - "failed": technical failure. Includes a "reason":
-          - "rate_limited": all retries exhausted while being rate-limited
-            - caller should show the "bot is busy" message, not tips
-          - "other": non-rate-limit failure - caller should show photo tips
+      - "failed": technical failure - caller should show photo-quality tips
     """
     corrections = corrections or []
-    image_bytes = optimize_image(image_bytes)
     parsed = None
-    last_failure_was_rate_limit = False
 
-    for attempt in range(1, MAX_ATTEMPTS + 1):
-        strict = attempt > 1  # ask more firmly for clean JSON after the first miss
+    for attempt, strict in enumerate((False, True)):
         try:
             raw_text = _call_gemini(image_bytes, media_type, strict, corrections)
-        except Exception as exc:
-            is_retryable, suggested_wait = _classify_and_log(exc, attempt)
-            last_failure_was_rate_limit = isinstance(exc, genai_errors.APIError) and exc.code == 429
-
-            if not is_retryable or attempt == MAX_ATTEMPTS:
-                break
-
-            wait = suggested_wait or min(BASE_BACKOFF_SECONDS * (2 ** (attempt - 1)), MAX_BACKOFF_SECONDS)
-            time.sleep(wait)
+        except Exception:
+            logger.exception("Gemini API call failed (attempt %d)", attempt + 1)
             continue
 
         parsed = _extract_json(raw_text)
         if parsed is not None:
             break
-
-        logger.warning("[JSON_PARSE] Could not parse Gemini response on attempt %d: %.200s", attempt, raw_text)
-        if attempt < MAX_ATTEMPTS:
-            time.sleep(1)  # brief pause before the stricter retry, not rate-limit related
+        logger.warning(
+            "Could not parse Gemini response as JSON (attempt %d): %.200s",
+            attempt + 1, raw_text,
+        )
 
     if parsed is None:
-        return {"status": "failed", "reason": "rate_limited" if last_failure_was_rate_limit else "other"}
+        return {"status": "failed"}
 
     return _finalize_result(parsed)
 

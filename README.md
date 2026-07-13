@@ -2,28 +2,6 @@
 
 Two free API keys, no credit card, no paid services anywhere in this project.
 
-## Scalability & reliability update (this version)
-
-**Root issue diagnosed:** Google cut Gemini's free-tier rate limits significantly in recent months - some tiers are down to single-digit requests per minute. The bot's own logic was healthy; nothing was calling Gemini more than once per photo. The 429s were real quota pressure, not a bug in the analysis code.
-
-**What changed, and why each piece matters:**
-
-1. **Verified single-request-per-photo** — confirmed by code inspection and an automated test: exactly one call site (`gemini_queue.submit_photo_job`) is reachable from `handle_photo`, and `estimate_calories`'s internal retry loop only fires on an actual failure, never duplicates a successful call.
-2. **`gemini_queue.py` (new file)** — a single background worker processes all photos sequentially with an enforced minimum gap between real Gemini calls (`MIN_SECONDS_BETWEEN_REQUESTS`, default 7s ≈ 8-9 req/min). This is the actual fix for burst 429s: no matter how many users upload at once, requests leave at a safe, steady pace instead of firing all at once. **This is the single most important tunable in the whole update** — if you still see `[RATE_LIMIT]` in your Railway logs after deploying, raise this number. Check your current real limit at https://ai.google.dev/gemini-api/docs/rate-limits, since Google has changed it before without much notice.
-3. **Retry logic in `vision.py`** — the google-genai SDK's own built-in retry is disabled (it has a known bug where it ignores the server's suggested retry delay). Our own loop retries up to 4 times on 429/500/502/503/504/timeouts with exponential backoff, and parses the server's suggested wait time out of the error message when present. Non-retryable errors (400/403/404 — bad key, bad request) fail immediately instead of wasting attempts.
-4. **Two different failure messages** — a rate-limit exhaustion now shows the Kurdish "بۆتەکە زۆر بەکاردەهێنرێت" message instead of the generic "check your photo" tips, since the two situations need different user reactions.
-5. **Per-user cooldown** (`gemini_queue.check_user_cooldown`, default 8s) — checked *before* a photo even enters the queue, so one user spamming photos can't consume quota that other users are waiting on.
-6. **Duplicate-image cache** — every photo is hashed (SHA-256); an identical photo analyzed within the last hour returns the cached result instantly with zero Gemini calls. Useful for accidental double-sends and repeat photos.
-7. **Image optimization** (`vision.optimize_image`, needs the new `Pillow` dependency) — resizes to 1024px on the long side at JPEG quality 85 before upload. Tested against a realistic phone-photo-sized image: meaningfully smaller upload with no loss to recognition quality, since 1024px is well above what's needed to identify food and read portions.
-8. **Structured logging** — every failure path now logs a clear tag: `[RATE_LIMIT]`, `[SERVER_ERROR]`, `[TIMEOUT]`, `[JSON_PARSE]`, `[SDK_ERROR]`, `[UNEXPECTED]`, `[QUEUE]`, `[CACHE]`, `[IMAGE_OPTIMIZE]`. Searching Railway logs for any of these tags should make debugging take minutes, not hours.
-9. **Failed requests were already never saved** — verified this was already correct (only the `status == "ok"` branch calls `storage.log_meal`), and added an automated test to lock in that guarantee going forward.
-10. **Additional free optimizations found in review:**
-    - **The blocking Gemini call now runs via `asyncio.to_thread`** inside the queue worker — this was a real (if invisible) bug before: `client.models.generate_content()` is a synchronous/blocking call, and calling it directly inside an `async def` handler froze the *entire bot* (all users, all commands) for the duration of every single photo analysis. This was arguably a bigger scalability problem than the 429s themselves.
-    - **SQLite WAL mode** enabled (`storage.py`) — lets reads and writes happen concurrently instead of blocking each other under multiple simultaneous users. One line, no downside.
-    - **Corrections prompt already capped at 60 entries** (pre-existing) — confirmed this stays bounded as your correction count grows, so prompt size/token cost doesn't creep up unbounded over time.
-
-**What I deliberately did NOT change:** recognition prompt logic, glossary, macro calculations, or anything user-facing about the analysis itself — this update is purely about *reliability of delivery*, not accuracy.
-
 ## What this bot does now
 1. **Photo analysis**: send a meal photo, Gemini identifies every distinct food (including drinks, sauces, oils, bread, sides, garnishes), estimates portions using visible reference objects (plate/bowl/spoon/hand), and calculates calories + macros per item and as a total.
 2. **Genuine uncertainty handling**: for visually confusable foods (e.g. pomegranate molasses vs tomato sauce), the bot gives its best estimate plus 1-2 alternative readings instead of silently guessing — but only when there's real ambiguity, not by default.
@@ -58,8 +36,7 @@ Same two keys as before — nothing new to set up:
 
 ## New files in this version
 - `nutrition.py` — BMR/TDEE/target math (Mifflin-St Jeor) and rule-based meal quality analysis. Pure calculation, no AI call, instant and free.
-- `gemini_queue.py` — request pacing, per-user cooldown, and duplicate-image caching (see the scalability section above).
-- **One new dependency**: `Pillow` (image resizing) — still fully free/open-source, added to `requirements.txt`. Redeploying on Railway will pick it up automatically.
+- Everything else is the same files as before, extended in place — no rewrite, no new dependencies (`requirements.txt` is unchanged).
 
 ## Improving the glossary and confusable pairs
 Same as before — `kurdish_foods.py` is still a plain list, copy-paste to add a dish. Two things are new in this file:
