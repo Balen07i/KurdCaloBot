@@ -23,7 +23,7 @@ from nutrition import (
     analyze_meal,
     calculate_targets,
 )
-from vision import estimate_calories
+import gemini_queue
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -326,6 +326,15 @@ def format_result(result: dict, user: dict | None) -> str:
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
+
+    # Per-user cooldown check happens BEFORE we even touch the queue, so a
+    # spammy user can't burn shared Gemini quota that other users need.
+    cooldown_remaining = gemini_queue.check_user_cooldown(user_id)
+    if cooldown_remaining > 0:
+        await update.message.reply_text(gemini_queue.COOLDOWN_MESSAGE_KURDISH)
+        return
+    gemini_queue.mark_user_request(user_id)
+
     processing_msg = await update.message.reply_text("🔍 خواردنەکە شیکار دەکەم...")
 
     try:
@@ -334,7 +343,19 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         image_bytes = bytes(await photo_file.download_as_bytearray())
 
         corrections = storage.get_all_corrections()
-        result = estimate_calories(image_bytes, media_type="image/jpeg", corrections=corrections)
+        result, queue_position = await gemini_queue.submit_photo_job(
+            image_bytes, "image/jpeg", corrections
+        )
+
+        if queue_position > 0:
+            # Only worth mentioning if they actually had to wait behind
+            # someone else - avoids noise for the common case.
+            try:
+                await processing_msg.edit_text(
+                    f"🔍 لە نۆرەدایت ({queue_position} کەس لەپێش تۆن)، تکایە چاوەڕێ بکە..."
+                )
+            except Exception:
+                pass  # non-critical - if this edit fails, just proceed silently
 
         if result["status"] == "ok":
             user = storage.get_user(user_id)
@@ -345,11 +366,13 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         elif result["status"] == "no_food":
             await processing_msg.edit_text(NO_FOOD_MESSAGE)
+        elif result.get("reason") == "rate_limited":
+            await processing_msg.edit_text(gemini_queue.RATE_LIMIT_MESSAGE_KURDISH)
         else:
             await processing_msg.edit_text(PHOTO_TIPS_MESSAGE)
 
     except Exception:
-        logger.exception("Error processing photo")
+        logger.exception("[UNEXPECTED] Error in handle_photo")
         await processing_msg.edit_text(PHOTO_TIPS_MESSAGE)
 
 
@@ -494,11 +517,18 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("📸 وێنەیەکی خواردن بنێرە، یان /help بنووسە بۆ بینینی فەرمانەکان.")
 
 
+async def _post_init(application):
+    # Must start the worker from inside the running event loop - this hook
+    # is PTB's supported way to do that, runs once before polling begins.
+    gemini_queue.start_worker()
+    logger.info("[STARTUP] Gemini request queue worker is running")
+
+
 def main():
     token = os.environ["TELEGRAM_BOT_TOKEN"]
     storage.init_db()
 
-    app = Application.builder().token(token).build()
+    app = Application.builder().token(token).post_init(_post_init).build()
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))

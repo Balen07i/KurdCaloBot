@@ -22,6 +22,10 @@ DB_PATH = "calories.db"
 
 def _connect():
     conn = sqlite3.connect(DB_PATH)
+    # WAL mode lets reads and writes happen concurrently instead of
+    # blocking each other - free improvement for multiple simultaneous
+    # users, no behavior change otherwise.
+    conn.execute("PRAGMA journal_mode=WAL")
     conn.row_factory = sqlite3.Row
     return conn
 
