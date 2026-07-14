@@ -2,7 +2,45 @@
 
 Two free API keys, no credit card, no paid services anywhere in this project.
 
-## Scalability & reliability update (this version)
+## Bug fix: circuit breaker feedback loop (this version)
+
+**What you saw:** `/stats` showing 27 rate-limit errors, circuit breaker permanently active, pacing pinned at the 30s ceiling, queue empty.
+
+**Root cause, confirmed and reproduced with a test:** the circuit breaker's own synthetic "busy" responses (returned when the circuit is open, *without ever contacting Gemini*) were being fed back into the same statistics that decide whether to keep the circuit open. Every short-circuited request looked exactly like "another confirmed 429" to the tracking logic - so once the circuit tripped, it could re-justify staying open off its own defensive output, indefinitely, regardless of whether Gemini itself had recovered. The `rate_limited_failures` counter in `/stats` was also conflating real Gemini responses with synthetic short-circuits, so "27" didn't necessarily mean 27 real 429s.
+
+**Fix:** only real Gemini attempts now feed the adaptive-pacing/circuit-breaker stats (`gemini_queue.py`, `_worker`). Short-circuited requests are counted separately (`circuit_breaker_short_circuits`, now shown distinctly in `/stats`) and never touch the real failure counters. Reproduced the exact bug (tripped the circuit with 3 real failures, then fed it 10 synthetic short-circuits) and confirmed the real counters correctly stay at 3, not climb to 13.
+
+**Also added:** exponential circuit-reopen backoff (60s → 120s → 240s → capped at 300s) for genuinely sustained failures, resetting the moment a real recovery probe succeeds. A burst-style rate limit clears in one 60s window; a truly exhausted daily/project quota won't, and probing every 60s for hours serves no purpose. Tested: confirmed cooldowns grow 0.2→0.4→0.8→capped in a scaled-down simulation, and confirmed a successful real probe resets everything (interval, consecutive-failure counter, reopen backoff) back to healthy.
+
+**On your actual "is this a real quota exhaustion" question:** with the bug fixed, if you deploy this and *still* see sustained real `rate_limited_failures` climbing (not `circuit_breaker_short_circuits`), that's now a trustworthy signal of genuine Gemini-side exhaustion, not a code artifact. At that point:
+- Check https://aistudio.google.com/apikey confirms your key is still active and matches Railway's `GEMINI_API_KEY` env var exactly (a silently-regenerated or mismatched key typically shows as 401/403, not 429, but worth ruling out first).
+- Check your actual current limits and usage at https://ai.google.dev/gemini-api/docs/rate-limits - Google has cut free-tier limits before without much notice, and there's a separate daily (RPD) cap in addition to the per-minute one; sustained 429s across many minutes (not just a burst) point to RPD, not RPM.
+- If RPD is exhausted, the only real fix is waiting for the daily reset (or, if you're past validating the MVP, enabling billing on the same project - the code needs zero changes for that, per the earlier Gemini setup notes below).
+
+## Long-term scalability review (previous version)
+
+
+The core constraint that shapes everything below: Gemini's free-tier RPM (~7-9/min at our conservative pacing) is a hard ceiling no code change increases. So the real goal isn't "handle thousands of *simultaneous* analyses" — it's *never waste a request, degrade gracefully under backlog, and stay memory-safe while queued*. Everything here is filtered through that.
+
+**Implemented (genuine, measured impact):**
+- **Image optimization moved before the queue, not inside the worker.** A backlog used to mean megabytes of full-size phone photos sitting in memory per queued job. Now the queue only ever holds the ~30-50KB optimized version.
+- **Adaptive pacing (AIMD)** replaces the fixed 7s guess. Backs off hard (×1.6) the instant a real 429 happens; cautiously eases down (−0.25s) after 6 consecutive clean successes, floor 5s / ceiling 30s. Tested: confirmed it speeds up under sustained health and snaps back on real rate-limit evidence.
+- **Circuit breaker**: after 3 consecutive rate-limited failures, opens for 60s and every queued job gets an instant honest "busy" response instead of each one separately burning ~90s on a doomed retry cycle. Tested: confirmed zero Gemini calls happen while the circuit is open, and it recovers automatically after cooldown.
+- **DB indexes** on `meals(user_id, created_at)` and a partial index on `feedback`. Verified with `EXPLAIN QUERY PLAN` that SQLite actually uses them, not just that they exist. Every `/today`/`/week`/`/history` query hits this.
+- **Defensive worker loop**: an unexpected exception anywhere in a job (not just classified API errors) used to have a theoretical path to silently killing the entire background worker - permanent outage until a manual restart. Tested by injecting a raw `RuntimeError` mid-analysis and confirming the worker survives and keeps processing the next job.
+- **Queue depth cap** (40): beyond this, new submissions fail fast with a "very busy" message instead of queuing into a wait time of tens of minutes.
+- **`/stats` command**: real observability - total requests, cache hit rate, current adaptive interval, circuit breaker state, queue depth. Not gated by any admin check (this app has no auth concept); restrict it later by checking `update.effective_user.id` if you want.
+- **Cache bumped 200 → 500 entries**, and stale per-user cooldown entries get swept periodically - both cheap, bound memory more tightly under long-term growth.
+
+**Considered and explicitly rejected (explained, not just skipped):**
+- **Perceptual/near-duplicate image hashing** - real risk (two different dishes falsely matching as "similar enough" would silently serve wrong nutrition data) against a low expected benefit (people rarely re-photograph the exact same plate for this kind of app). Not worth it.
+- **Migrating off SQLite** - Gemini's RPM ceiling is 1-2 orders of magnitude below anything SQLite+WAL can handle; it will never be the actual bottleneck.
+- **A persistent/durable job queue surviving restarts** - the real queue is rarely more than a handful of jobs deep given the RPM ceiling; not worth the engineering effort to protect a rare, low-cost event.
+- **SQLite connection pooling** - per-call overhead (~1ms) is noise next to the multi-second Gemini pacing dominating the critical path.
+- **Downscaling images below 1024px** - would save a little more bandwidth at real risk to recognition accuracy.
+- **Redis or an external queue/cache service** - reintroduces a paid dependency for no benefit at this scale.
+
+## Scalability & reliability update (previous version)
 
 **Root issue diagnosed:** Google cut Gemini's free-tier rate limits significantly in recent months - some tiers are down to single-digit requests per minute. The bot's own logic was healthy; nothing was calling Gemini more than once per photo. The 429s were real quota pressure, not a bug in the analysis code.
 

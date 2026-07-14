@@ -51,6 +51,19 @@ MAX_OUTPUT_TOKENS = 3500
 # guidance (429 rate limit, 408/500/502/503/504 transient server issues).
 # 400/401/403/404 are NOT retried - those mean something is wrong with the
 # request itself (bad key, bad payload) and retrying won't help.
+#
+# IMPORTANT (fixes a real production bug): Gemini's 429 error message can
+# suggest a retry delay far longer than a per-minute limit would imply -
+# under sustained free-tier pressure it can legitimately say "retry in
+# 400+ seconds" (e.g. a daily-quota-style reset, not a burst limit). If we
+# blindly slept for that full duration, one unlucky photo could block the
+# single worker (and therefore every user queued behind it) for many
+# minutes. MAX_BACKOFF_SECONDS below is a hard ceiling applied to BOTH
+# our own exponential backoff AND any server-suggested delay - we would
+# rather fail fast with a clear "try again shortly" message than make
+# someone stare at "🔍 analyzing..." for 7 minutes. Worst case total time
+# for one photo: MAX_ATTEMPTS-1 retry gaps × MAX_BACKOFF_SECONDS ≈ 90s,
+# not minutes.
 MAX_ATTEMPTS = 4
 RETRYABLE_STATUS_CODES = {408, 429, 500, 502, 503, 504}
 BASE_BACKOFF_SECONDS = 2.0
@@ -307,8 +320,9 @@ def _classify_and_log(exc: Exception, attempt: int) -> tuple[bool, float | None]
         if code == 429:
             wait = _extract_retry_after_seconds(exc)
             logger.warning(
-                "[RATE_LIMIT] Gemini 429 on attempt %d, server suggests %s: %s",
-                attempt, f"{wait}s" if wait else "no delay given", exc,
+                "[RATE_LIMIT] Gemini 429 on attempt %d, server suggests %s "
+                "(capped to %.0fs max before use): %s",
+                attempt, f"{wait}s" if wait else "no delay given", MAX_BACKOFF_SECONDS, exc,
             )
             return True, wait
         if code in RETRYABLE_STATUS_CODES:
@@ -333,6 +347,11 @@ def estimate_calories(
     resilience against transient failures, not duplicate work - a photo
     that succeeds on attempt 1 never triggers attempt 2).
 
+    NOTE: expects image_bytes to already be optimized (see optimize_image
+    below) - the caller (gemini_queue.submit_photo_job's caller) should
+    call optimize_image() BEFORE this, and ideally before even enqueueing,
+    so the queue never holds full-size originals under a backlog.
+
     Returns a dict with a "status" key:
       - "ok": normal result (see _finalize_result for full shape)
       - "no_food": Gemini determined the photo genuinely has no food
@@ -342,7 +361,6 @@ def estimate_calories(
           - "other": non-rate-limit failure - caller should show photo tips
     """
     corrections = corrections or []
-    image_bytes = optimize_image(image_bytes)
     parsed = None
     last_failure_was_rate_limit = False
 
@@ -357,7 +375,11 @@ def estimate_calories(
             if not is_retryable or attempt == MAX_ATTEMPTS:
                 break
 
-            wait = suggested_wait or min(BASE_BACKOFF_SECONDS * (2 ** (attempt - 1)), MAX_BACKOFF_SECONDS)
+            # THE FIX: cap suggested_wait too, not just our own computed
+            # backoff - a server-suggested delay is honored up to the same
+            # ceiling, never blindly trusted for its full duration.
+            computed_backoff = min(BASE_BACKOFF_SECONDS * (2 ** (attempt - 1)), MAX_BACKOFF_SECONDS)
+            wait = min(suggested_wait, MAX_BACKOFF_SECONDS) if suggested_wait else computed_backoff
             time.sleep(wait)
             continue
 
