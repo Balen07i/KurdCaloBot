@@ -2,7 +2,29 @@
 
 Two free API keys, no credit card, no paid services anywhere in this project.
 
-## Scalability & reliability update (this version)
+## Long-term scalability review (this version)
+
+The core constraint that shapes everything below: Gemini's free-tier RPM (~7-9/min at our conservative pacing) is a hard ceiling no code change increases. So the real goal isn't "handle thousands of *simultaneous* analyses" — it's *never waste a request, degrade gracefully under backlog, and stay memory-safe while queued*. Everything here is filtered through that.
+
+**Implemented (genuine, measured impact):**
+- **Image optimization moved before the queue, not inside the worker.** A backlog used to mean megabytes of full-size phone photos sitting in memory per queued job. Now the queue only ever holds the ~30-50KB optimized version.
+- **Adaptive pacing (AIMD)** replaces the fixed 7s guess. Backs off hard (×1.6) the instant a real 429 happens; cautiously eases down (−0.25s) after 6 consecutive clean successes, floor 5s / ceiling 30s. Tested: confirmed it speeds up under sustained health and snaps back on real rate-limit evidence.
+- **Circuit breaker**: after 3 consecutive rate-limited failures, opens for 60s and every queued job gets an instant honest "busy" response instead of each one separately burning ~90s on a doomed retry cycle. Tested: confirmed zero Gemini calls happen while the circuit is open, and it recovers automatically after cooldown.
+- **DB indexes** on `meals(user_id, created_at)` and a partial index on `feedback`. Verified with `EXPLAIN QUERY PLAN` that SQLite actually uses them, not just that they exist. Every `/today`/`/week`/`/history` query hits this.
+- **Defensive worker loop**: an unexpected exception anywhere in a job (not just classified API errors) used to have a theoretical path to silently killing the entire background worker - permanent outage until a manual restart. Tested by injecting a raw `RuntimeError` mid-analysis and confirming the worker survives and keeps processing the next job.
+- **Queue depth cap** (40): beyond this, new submissions fail fast with a "very busy" message instead of queuing into a wait time of tens of minutes.
+- **`/stats` command**: real observability - total requests, cache hit rate, current adaptive interval, circuit breaker state, queue depth. Not gated by any admin check (this app has no auth concept); restrict it later by checking `update.effective_user.id` if you want.
+- **Cache bumped 200 → 500 entries**, and stale per-user cooldown entries get swept periodically - both cheap, bound memory more tightly under long-term growth.
+
+**Considered and explicitly rejected (explained, not just skipped):**
+- **Perceptual/near-duplicate image hashing** - real risk (two different dishes falsely matching as "similar enough" would silently serve wrong nutrition data) against a low expected benefit (people rarely re-photograph the exact same plate for this kind of app). Not worth it.
+- **Migrating off SQLite** - Gemini's RPM ceiling is 1-2 orders of magnitude below anything SQLite+WAL can handle; it will never be the actual bottleneck.
+- **A persistent/durable job queue surviving restarts** - the real queue is rarely more than a handful of jobs deep given the RPM ceiling; not worth the engineering effort to protect a rare, low-cost event.
+- **SQLite connection pooling** - per-call overhead (~1ms) is noise next to the multi-second Gemini pacing dominating the critical path.
+- **Downscaling images below 1024px** - would save a little more bandwidth at real risk to recognition accuracy.
+- **Redis or an external queue/cache service** - reintroduces a paid dependency for no benefit at this scale.
+
+## Scalability & reliability update (previous version)
 
 **Root issue diagnosed:** Google cut Gemini's free-tier rate limits significantly in recent months - some tiers are down to single-digit requests per minute. The bot's own logic was healthy; nothing was calling Gemini more than once per photo. The 429s were real quota pressure, not a bug in the analysis code.
 

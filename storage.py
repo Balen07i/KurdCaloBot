@@ -98,6 +98,18 @@ def init_db():
         """
     )
 
+    # Every /today, /week, /month, /history query filters on exactly this
+    # combination. Free at this row count, essential once it grows -
+    # without it, these become full table scans.
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_meals_user_created ON meals(user_id, created_at)"
+    )
+    # Partial index - only rows with feedback set are ever queried this way
+    # (review_feedback.py), so indexing only those keeps it small and cheap.
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_meals_feedback ON meals(feedback) WHERE feedback IS NOT NULL"
+    )
+
     conn.commit()
     conn.close()
 
