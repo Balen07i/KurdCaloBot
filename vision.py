@@ -347,11 +347,6 @@ def estimate_calories(
     resilience against transient failures, not duplicate work - a photo
     that succeeds on attempt 1 never triggers attempt 2).
 
-    NOTE: expects image_bytes to already be optimized (see optimize_image
-    below) - the caller (gemini_queue.submit_photo_job's caller) should
-    call optimize_image() BEFORE this, and ideally before even enqueueing,
-    so the queue never holds full-size originals under a backlog.
-
     Returns a dict with a "status" key:
       - "ok": normal result (see _finalize_result for full shape)
       - "no_food": Gemini determined the photo genuinely has no food
@@ -361,6 +356,7 @@ def estimate_calories(
           - "other": non-rate-limit failure - caller should show photo tips
     """
     corrections = corrections or []
+    image_bytes = optimize_image(image_bytes)
     parsed = None
     last_failure_was_rate_limit = False
 

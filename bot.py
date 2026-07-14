@@ -3,7 +3,6 @@
 # Main entry point. Run with: python bot.py
 # Requires env vars: TELEGRAM_BOT_TOKEN, GEMINI_API_KEY (see .env.example)
 
-import asyncio
 import logging
 import os
 
@@ -25,7 +24,6 @@ from nutrition import (
     calculate_targets,
 )
 import gemini_queue
-from vision import optimize_image
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -244,31 +242,6 @@ async def month(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    Bot-wide runtime stats (not per-user) - operator-facing observability.
-    Not gated by any admin check since this app has no auth concept yet;
-    if you want to restrict it later, check update.effective_user.id
-    against your own Telegram user ID here.
-    """
-    s = gemini_queue.get_stats_summary()
-    circuit_line = "🔴 داخراوە (کورتکردنەوەی خێرا چالاکە)" if s["circuit_open"] else "🟢 کراوەیە"
-    await update.message.reply_text(
-        f"📈 ئاماری کارکردن (تیمی {s['uptime_minutes']} خولەک):\n\n"
-        f"📸 کۆی داواکاریەکان: {s['total_submitted']}\n"
-        f"♻️ کاش هیت: {s['cache_hits']} ({s['cache_hit_rate_pct']}%)\n"
-        f"✅ سەرکەوتوو: {s['successful_analyses']}\n"
-        f"🤔 هیچ خواردن نەدۆزرایەوە: {s['no_food_results']}\n"
-        f"🚦 هەڵەی سنووری داواکاری: {s['rate_limited_failures']}\n"
-        f"❌ هەڵەی تر: {s['other_failures']}\n"
-        f"🔁 قەڵبی سنووردار کراوە: {s['circuit_breaker_trips']} جار\n\n"
-        f"⏱️ ئێستا خێرایی نێوان داواکاریەکان: {s['current_pacing_interval']}s\n"
-        f"⚡ کورتکردنەوەی خێرا: {circuit_line}\n"
-        f"📥 قەبارەی نۆرە: {s['queue_depth']}\n"
-        f"💾 بیرگە: {s['cached_entries']} خواردن، {s['tracked_users']} بەکارهێنەر"
-    )
-
-
 async def history(update: Update, context: ContextTypes.DEFAULT_TYPE):
     meals = storage.get_recent_meals(update.effective_user.id, limit=10)
     if not meals:
@@ -369,18 +342,12 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         photo_file = await photo.get_file()
         image_bytes = bytes(await photo_file.download_as_bytearray())
 
-        # Optimize BEFORE enqueueing, not inside the worker - a queue full
-        # of full-size phone photos is real, avoidable memory pressure
-        # under any backlog. Runs in a thread so resizing doesn't block
-        # the event loop for other users mid-request.
-        image_bytes = await asyncio.to_thread(optimize_image, image_bytes)
-
         corrections = storage.get_all_corrections()
         result, queue_position = await gemini_queue.submit_photo_job(
             image_bytes, "image/jpeg", corrections
         )
 
-        if queue_position > 0 and result.get("reason") != "queue_full":
+        if queue_position > 0:
             # Only worth mentioning if they actually had to wait behind
             # someone else - avoids noise for the common case.
             try:
@@ -399,8 +366,6 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         elif result["status"] == "no_food":
             await processing_msg.edit_text(NO_FOOD_MESSAGE)
-        elif result.get("reason") == "queue_full":
-            await processing_msg.edit_text(gemini_queue.QUEUE_FULL_MESSAGE_KURDISH)
         elif result.get("reason") == "rate_limited":
             await processing_msg.edit_text(gemini_queue.RATE_LIMIT_MESSAGE_KURDISH)
         else:
@@ -592,7 +557,6 @@ def main():
     app.add_handler(CommandHandler("today", today))
     app.add_handler(CommandHandler("week", week))
     app.add_handler(CommandHandler("month", month))
-    app.add_handler(CommandHandler("stats", stats_command))
     app.add_handler(CommandHandler("history", history))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     app.add_handler(CallbackQueryHandler(handle_callback))
