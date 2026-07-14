@@ -528,25 +528,7 @@ def main():
     token = os.environ["TELEGRAM_BOT_TOKEN"]
     storage.init_db()
 
-    # concurrent_updates=True is essential here, not optional: PTB
-    # processes updates one at a time by default and does NOT start
-    # dispatching the next update until the current handler's coroutine
-    # returns. Since a photo handler can legitimately await the Gemini
-    # queue for a while (rate-limit retries), leaving this at the default
-    # meant every OTHER user's update - including their own instant
-    # "🔍 analyzing" message - waited behind whatever the current photo
-    # was doing. This was the real cause of the "7 minute delay before
-    # anything happens" bug. Enabling this makes every update dispatch
-    # immediately into its own task; the actual Gemini call pacing and
-    # rate-limit protection is still fully enforced by gemini_queue's
-    # single sequential worker, completely independent of this setting.
-    app = (
-        Application.builder()
-        .token(token)
-        .post_init(_post_init)
-        .concurrent_updates(True)
-        .build()
-    )
+    app = Application.builder().token(token).post_init(_post_init).build()
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))
