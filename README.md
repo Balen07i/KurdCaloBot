@@ -2,7 +2,34 @@
 
 Two free API keys, no credit card, no paid services anywhere in this project.
 
-## Bug fix: circuit breaker feedback loop (this version)
+## Quota-optimization architecture (this version)
+
+Reframed around one fact: Gemini's free-tier RPM is a permanent, fixed ceiling that no code change raises. So this round is entirely about minimizing real Gemini requests, ranked and implemented in order of actual impact - full reasoning and rejected alternatives below.
+
+**1. Opportunistic batching (`vision.estimate_calories_batch`, `gemini_queue.BATCH_SIZE`) - the standout idea.** RPM limits count *requests*, not images-per-request. When multiple photos are already queued at the moment the worker picks up work, they're now analyzed in ONE Gemini request instead of N. Never adds artificial latency for the single-photo case - it only batches what's *already* waiting, never waits around hoping more arrives. Capped at 3 per batch deliberately: a batch's fate is shared (one failed request fails every job in it), so the cap bounds the downside. Tested: confirmed a single submission still uses the plain single-image path untouched, confirmed 3 concurrent submissions correctly collapse into 1 real Gemini call with each result routed back to the right requester (verified by unique per-image size), and confirmed a failed batch applies the same outcome to every job in it rather than silently losing track of any.
+
+**2. Local pre-filter (`vision.check_image_locally`) - catches junk before it costs a request.** Deliberately narrow: only rejects images that are near-certain to fail anyway (near-blank or near-black frames, via pixel variance/brightness checks), never tries to judge "is this food" - that's Gemini's job, and a wrong local rejection of a valid photo is worse than one wasted request. Pure Pillow, no new dependency. Tested against a realistic textured "food-like" image (correctly passes) and both a blank and a near-black frame (correctly rejected).
+
+**3. Conservative perceptual-hash (dHash) near-duplicate cache.** Hand-rolled 64-bit dHash using only Pillow - no new dependency. Deliberately scoped narrow: catches the real, specific scenario of someone resending essentially the same photo after lossy recompression (forwarding, screenshotting, WhatsApp re-saving), which breaks exact SHA-256 matching but not this. NOT used for loose "similar-looking food" matching - tested the same image at very different JPEG quality (Hamming distance ~1) against two genuinely different images (Hamming distance ~31), a 30-bit margin that lets the strict threshold (≤4) catch real duplicates with essentially zero false-positive risk. End-to-end tested through the actual queue: a recompressed duplicate correctly reuses the cached result with zero additional Gemini calls.
+
+**4. Dynamic/escalating per-user cooldown.** Normal meal-logging (a few photos per day) never reaches the escalation thresholds. Rapid-fire submission patterns (5+ in 5 minutes) get progressively throttled, decaying back to normal automatically. Tested: confirmed a normal-paced usage pattern never escalates, confirmed a rapid-fire pattern correctly escalates starting at the configured threshold.
+
+**5. Data-collection foundation for a possible future local-recognition layer (`analysis_fingerprints` table).** Every successful analysis now logs its dHash fingerprint and outcome. This is *purely* additive logging - nothing reads this table to skip a Gemini call yet. Deliberately deferred, not half-implemented: with zero accumulated data today, a bypass built on this would either rarely trigger (no real savings) or need a loose-enough threshold to get coverage, which risks silently serving wrong nutrition data. Revisit once this table has real volume (months, not days).
+
+**6. Small UX copy nudge** - the welcome message now mentions sending multiple dishes on one plate as a single photo (a capability that already existed but wasn't advertised), reducing accidental redundant submissions. Free, one line, flagged for the usual native-speaker review.
+
+**`/stats` now shows quota-specific savings**: exact-cache hits, near-duplicate (phash) hits, and requests saved via batching, separately from the reliability metrics added last round.
+
+### Explicitly rejected, with reasoning
+- **Full local ML classifier bypass (today)** - would be the highest-value idea eventually, but implementing it now means zero training data, real accuracy risk from forcing coverage, and a heavy-dependency footprint (PyTorch/TensorFlow) that risks blowing past Railway's free-tier resource limits. The safe move is building the data foundation now (#5) and revisiting the actual bypass once it has months of real volume.
+- **Loose/aggressive perceptual hashing** ("similar-looking food" matching, not just near-identical photos) - real risk of two *different* dishes matching as "close enough" and silently serving wrong nutrition data. The strict, narrow version (#3) captures the legitimate use case without this risk.
+- **"Food-result cache" as an independent lever** - doesn't actually reduce calls without a non-Gemini recognition method for *new* photos; it's not a separate technique from the image-hashing/local-CV ideas, just a different name for the same dependency.
+- **Non-ML "food vs non-food" classifier** - classical CV can't reliably distinguish food from non-food by color/texture alone; a false rejection of a valid photo is a worse outcome than one wasted request. Only kept the much narrower, much safer "obviously blank/black" filter (#2).
+- **True priority-queue reordering** (first-time users before repeat testers) - doesn't reduce the number of Gemini calls at all, only their order. Out of scope for a "minimize Gemini usage" goal specifically, even though it might have separate fairness value.
+- **Prompt/token compression** - doesn't address request-count (RPM), which is the confirmed bottleneck; would only help if a separate token-based (TPM) limit turns out to be binding, which isn't established.
+
+## Bug fix: circuit breaker feedback loop (previous version)
+
 
 **What you saw:** `/stats` showing 27 rate-limit errors, circuit breaker permanently active, pacing pinned at the 30s ceiling, queue empty.
 

@@ -98,6 +98,28 @@ def init_db():
         """
     )
 
+    # Foundation for a POSSIBLE future local-recognition layer (see
+    # README) - logs every successful analysis's dHash fingerprint
+    # alongside what Gemini identified. Purely additive, write-only from
+    # the app's perspective right now - nothing reads this table to skip
+    # a Gemini call yet. Deliberately deferred: with zero accumulated
+    # data today, any bypass logic built on this would either rarely
+    # trigger (no real savings) or be forced to use a loose-enough
+    # threshold to get coverage, which risks silently serving wrong
+    # nutrition data. Revisit once this table has real volume.
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS analysis_fingerprints (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            dhash INTEGER,
+            food_summary TEXT,
+            total_kcal INTEGER,
+            confidence TEXT,
+            created_at TEXT NOT NULL
+        )
+        """
+    )
+
     # Every /today, /week, /month, /history query filters on exactly this
     # combination. Free at this row count, essential once it grows -
     # without it, these become full table scans.
@@ -114,10 +136,37 @@ def init_db():
     conn.close()
 
 
+def log_analysis_fingerprint(dhash_value: int | None, result: dict):
+    """
+    Write-only logging for the future local-recognition foundation
+    described above. Never raises - this is pure observability, a
+    failure here must never affect the actual user-facing flow.
+    """
+    if dhash_value is None:
+        return
+    try:
+        foods = result.get("foods", [])
+        food_summary = "، ".join(f["name_kurdish"] for f in foods)
+        conn = _connect()
+        conn.execute(
+            """
+            INSERT INTO analysis_fingerprints (dhash, food_summary, total_kcal, confidence, created_at)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (dhash_value, food_summary, result.get("total_kcal", 0),
+             result.get("confidence", ""), datetime.utcnow().isoformat()),
+        )
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass  # never let logging break the real flow
+
+
 # --- Meals ---------------------------------------------------------------
 
 def log_meal(user_id: int, result: dict) -> int:
     """Inserts a meal (one row per photo) and returns its row id."""
+
     foods = result.get("foods", [])
     food_summary = "، ".join(f["name_kurdish"] for f in foods) or "نەناسراو"
     any_matched = any(f.get("matched_glossary") for f in foods)

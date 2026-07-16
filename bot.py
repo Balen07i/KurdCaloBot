@@ -25,7 +25,7 @@ from nutrition import (
     calculate_targets,
 )
 import gemini_queue
-from vision import optimize_image
+from vision import check_image_locally, compute_dhash, optimize_image
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -74,6 +74,8 @@ WELCOME_MESSAGE = (
     "ئەگەر چەند خواردنێک پێکەوە بن یەکە‌یەک هەڵیان دەبژێرم، پاشان کالۆری و "
     "پرۆتین و کاربۆهایدرەیت و چەوری‌یان بۆ دەخەمە ڕوو — بە کوردی، بێ "
     "بەرامبەر، بۆ هەمیشە.\n\n"
+    "💡 ئەگەر چەند خواردن لەسەر یەک قاپن، وێنەیەکیان پێکەوە بنێرە — پێویست "
+    "ناکات هەریەکەیان بە جیا بنێریت.\n\n"
     "پێشنیار دەکەم /profile بەکاربهێنیت بۆ دانانی ئامانجی ڕۆژانەت، "
     "بەمجۆرە دوای هەر خواردنێک پێت دەڵێم چەند ماوە.\n\n" + HELP_MESSAGE
 )
@@ -253,16 +255,22 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     s = gemini_queue.get_stats_summary()
     circuit_line = "🔴 داخراوە (کورتکردنەوەی خێرا چالاکە)" if s["circuit_open"] else "🟢 کراوەیە"
+    real_gemini_requests = s["successful_analyses"] + s["no_food_results"] + s["other_failures"] + s["rate_limited_failures"]
     await update.message.reply_text(
         f"📈 ئاماری کارکردن (تیمی {s['uptime_minutes']} خولەک):\n\n"
         f"📸 کۆی داواکاریەکان: {s['total_submitted']}\n"
-        f"♻️ کاش هیت: {s['cache_hits']} ({s['cache_hit_rate_pct']}%)\n"
+        f"📡 داواکاری ڕاستەقینەی Gemini: {real_gemini_requests}\n\n"
+        f"♻️ کاش هیت (وردەکاری): {s['cache_hits']}\n"
+        f"🧩 کاش هیت (نزیک وێنە): {s['phash_cache_hits']}\n"
+        f"📦 داواکاری قرزکراو بە batch: {s['batched_requests_saved']}\n"
+        f"📊 ڕێژەی کاش: {s['cache_hit_rate_pct']}%\n\n"
         f"✅ سەرکەوتوو: {s['successful_analyses']}\n"
         f"🤔 هیچ خواردن نەدۆزرایەوە: {s['no_food_results']}\n"
         f"🚦 هەڵەی سنووری داواکاری (ڕاستەقینە): {s['rate_limited_failures']}\n"
         f"⛔ کورتکردنەوەی خێرا (پشکنین نەکراوە): {s['circuit_breaker_short_circuits']}\n"
         f"❌ هەڵەی تر: {s['other_failures']}\n"
-        f"🔁 قەڵبی سنووردار کراوە: {s['circuit_breaker_trips']} جار\n\n"
+        f"🔁 قەڵبی سنووردار کراوە: {s['circuit_breaker_trips']} جار\n"
+        f"⚡ کەمکردنەوەی خێرایی بۆ بەکارهێنەرانی خێرا: {s['rapid_fire_escalations']}\n\n"
         f"⏱️ ئێستا خێرایی نێوان داواکاریەکان: {s['current_pacing_interval']}s\n"
         f"⚡ کورتکردنەوەی خێرا: {circuit_line}\n"
         f"📥 قەبارەی نۆرە: {s['queue_depth']}\n"
@@ -359,7 +367,12 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # spammy user can't burn shared Gemini quota that other users need.
     cooldown_remaining = gemini_queue.check_user_cooldown(user_id)
     if cooldown_remaining > 0:
-        await update.message.reply_text(gemini_queue.COOLDOWN_MESSAGE_KURDISH)
+        message = (
+            gemini_queue.RAPID_FIRE_MESSAGE_KURDISH
+            if cooldown_remaining > gemini_queue.USER_COOLDOWN_SECONDS
+            else gemini_queue.COOLDOWN_MESSAGE_KURDISH
+        )
+        await update.message.reply_text(message)
         return
     gemini_queue.mark_user_request(user_id)
 
@@ -375,6 +388,14 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # under any backlog. Runs in a thread so resizing doesn't block
         # the event loop for other users mid-request.
         image_bytes = await asyncio.to_thread(optimize_image, image_bytes)
+
+        # Local pre-filter: catches obviously-invalid images (blank/near-
+        # black frames) before they'd ever cost a Gemini request. Fails
+        # open - only rejects when near-certain, never blocks a real photo.
+        is_valid, reject_reason = await asyncio.to_thread(check_image_locally, image_bytes)
+        if not is_valid:
+            await processing_msg.edit_text(reject_reason)
+            return
 
         corrections = storage.get_all_corrections()
         result, queue_position = await gemini_queue.submit_photo_job(
@@ -394,6 +415,8 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if result["status"] == "ok":
             user = storage.get_user(user_id)
             meal_id = storage.log_meal(user_id, result)
+            dhash_value = await asyncio.to_thread(compute_dhash, image_bytes)
+            storage.log_analysis_fingerprint(dhash_value, result)
             await processing_msg.edit_text(
                 format_result(result, user),
                 reply_markup=build_feedback_keyboard(meal_id),

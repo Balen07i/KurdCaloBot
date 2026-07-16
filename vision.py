@@ -111,6 +111,156 @@ def optimize_image(image_bytes: bytes) -> bytes:
         return image_bytes
 
 
+# --- Local pre-filter (catches obvious junk before it ever costs a request) --
+#
+# Deliberately conservative: only rejects images that are near-certain to
+# fail analysis anyway (solid-color frames, near-total-black captures).
+# Never tries to judge "is this food" - that's Gemini's job, and a wrong
+# local rejection of a valid photo is worse than one wasted request. Pure
+# Pillow, no new dependency, sub-millisecond on an already-optimized image.
+MIN_PIXEL_STDDEV = 5.0     # near-uniform/blank frame if variance is this low
+MIN_MEAN_BRIGHTNESS = 8.0  # near-total-black frame (0-255 scale)
+MIN_DIMENSION_PX = 80
+
+
+def check_image_locally(image_bytes: bytes) -> tuple[bool, str]:
+    """
+    Returns (is_valid, reason_if_invalid). reason_if_invalid is a short
+    natural Kurdish sentence suitable for showing directly to the user.
+    Fails open (treats as valid) on any processing error - if we can't
+    tell, let Gemini decide rather than block a legitimate photo.
+    """
+    try:
+        from PIL import Image, ImageStat
+
+        img = Image.open(io.BytesIO(image_bytes))
+        if min(img.size) < MIN_DIMENSION_PX:
+            return False, "📷 وێنەکە زۆر بچووکە. تکایە وێنەیەکی ئاساییی خواردنەکە بنێرە."
+
+        gray = img.convert("L")
+        stat = ImageStat.Stat(gray)
+        stddev = stat.stddev[0]
+        mean = stat.mean[0]
+
+        if stddev < MIN_PIXEL_STDDEV:
+            return False, "📷 وێنەکە دیار نییە (تەنها ڕەنگێکی ساف). تکایە دووبارە وێنە بگرە."
+        if mean < MIN_MEAN_BRIGHTNESS:
+            return False, "📷 وێنەکە زۆر تاریکە. تکایە لە شوێنێکی ڕووناکتر وێنە بگرە."
+
+        return True, ""
+    except Exception:
+        logger.exception("[LOCAL_PREFILTER] Failed to check image, letting it through")
+        return True, ""
+
+
+# --- Conservative perceptual hash (near-duplicate detection) -----------
+#
+# A plain 64-bit dHash (difference hash), hand-rolled with only Pillow -
+# no new dependency. Used ONLY with a strict Hamming-distance threshold
+# (see gemini_queue.PHASH_HAMMING_THRESHOLD) specifically to catch the
+# real, narrow scenario of someone resending essentially the same photo
+# after it's been re-compressed by forwarding/screenshotting (which
+# breaks exact SHA-256 matching but not this). Deliberately NOT used for
+# loose "similar-looking food" matching - that's a real accuracy risk for
+# a personal meal-tracking bot, evaluated and rejected (see README).
+def compute_dhash(image_bytes: bytes) -> int | None:
+    try:
+        from PIL import Image
+
+        img = Image.open(io.BytesIO(image_bytes)).convert("L").resize((9, 8), Image.LANCZOS)
+        pixels = list(img.getdata())
+        bits = 0
+        for row in range(8):
+            for col in range(8):
+                left = pixels[row * 9 + col]
+                right = pixels[row * 9 + col + 1]
+                bits = (bits << 1) | (1 if left > right else 0)
+        return bits
+    except Exception:
+        logger.exception("[PHASH] Failed to compute dHash")
+        return None
+
+
+def hamming_distance(a: int, b: int) -> int:
+    return bin(a ^ b).count("1")
+
+
+# --- Local pre-filter (zero Gemini calls) --------------------------------
+#
+# Deliberately conservative: only rejects images that are essentially
+# guaranteed to be worthless (near-blank, near-black, degenerate frames).
+# A full "is this actually food" classifier was considered and rejected -
+# false-negative risk (wrongly rejecting a valid food photo) is worse than
+# one avoidable Gemini call, so we only catch the unambiguous cases here
+# and let Gemini's own no_food_detected handle everything else.
+MIN_PIXEL_STDDEV = 5.0     # near-uniform/blank frame
+MIN_MEAN_BRIGHTNESS = 8.0  # near-total-black frame (not just "dim")
+MIN_DIMENSION_PX = 80
+
+
+def check_locally_invalid(image_bytes: bytes) -> str | None:
+    """
+    Returns a short reason string if the image is obviously unusable
+    (skip Gemini entirely), or None if it should proceed normally.
+    Cheap (a few ms) - runs on the already-optimized, smaller image.
+    """
+    try:
+        from PIL import Image, ImageStat
+
+        img = Image.open(io.BytesIO(image_bytes)).convert("L")  # grayscale
+
+        if min(img.size) < MIN_DIMENSION_PX:
+            return "too_small"
+
+        stat = ImageStat.Stat(img)
+        stddev = stat.stddev[0]
+        mean = stat.mean[0]
+
+        if stddev < MIN_PIXEL_STDDEV:
+            return "blank_or_uniform"
+        if mean < MIN_MEAN_BRIGHTNESS:
+            return "too_dark"
+
+        return None
+    except Exception:
+        logger.exception("[PREFILTER] Failed to inspect image, letting it through")
+        return None  # never block a scan over a prefilter bug
+
+
+# --- Lightweight perceptual hash (dHash) ---------------------------------
+#
+# Pure Pillow, no new dependency. Deliberately used with a STRICT Hamming
+# distance threshold (see gemini_queue.py) - this catches near-identical
+# recompressed/forwarded copies of the same photo, not "visually similar
+# but different" dishes. A looser threshold was evaluated and rejected:
+# two different rice-and-stew dishes can have similar color/texture
+# distribution, and a false match would silently serve wrong nutrition
+# data, which is worse than the (small) quota cost of a cache miss.
+def compute_dhash(image_bytes: bytes, hash_size: int = 8) -> int | None:
+    try:
+        from PIL import Image
+
+        img = Image.open(io.BytesIO(image_bytes)).convert("L")
+        img = img.resize((hash_size + 1, hash_size), Image.LANCZOS)
+        pixels = list(img.getdata())
+
+        bits = 0
+        for row in range(hash_size):
+            row_start = row * (hash_size + 1)
+            for col in range(hash_size):
+                bits <<= 1
+                if pixels[row_start + col] > pixels[row_start + col + 1]:
+                    bits |= 1
+        return bits
+    except Exception:
+        logger.exception("[DHASH] Failed to compute perceptual hash")
+        return None
+
+
+def hamming_distance(a: int, b: int) -> int:
+    return bin(a ^ b).count("1")
+
+
 def _build_corrections_prompt(corrections: list[dict]) -> str:
     """
     Folds in real user corrections as extra glossary-like context. This is
@@ -395,6 +545,128 @@ def estimate_calories(
         return {"status": "failed", "reason": "rate_limited" if last_failure_was_rate_limit else "other"}
 
     return _finalize_result(parsed)
+
+
+# --- Batch estimation ------------------------------------------------
+#
+# The single highest-impact quota optimization available: Gemini's RPM
+# limit counts REQUESTS, not images-per-request. A single request can
+# contain multiple images. So when several photos are ALREADY queued at
+# once (real concurrent load - the exact scenario the free tier struggles
+# with), analyzing them in ONE request instead of N directly and
+# proportionally reduces request count, which is the actual bottleneck.
+#
+# This does NOT engage for the common case of one photo at a time (see
+# gemini_queue.py - batching is opportunistic, never adds artificial
+# wait time hoping more photos arrive). It also intentionally caps batch
+# size low (see gemini_queue.BATCH_SIZE) - a batched request's fate is
+# shared across all images in it, so an unbounded batch size would mean
+# one bad request fails many users at once instead of one.
+
+BATCH_MAX_OUTPUT_TOKENS_PER_IMAGE = 1800  # extra headroom per image beyond the base budget
+
+
+def _build_batch_system_prompt(corrections: list[dict], batch_size: int) -> str:
+    base_prompt = _build_system_prompt(corrections)
+    return base_prompt + f"""
+
+BATCH MODE: you will be shown {batch_size} SEPARATE, UNRELATED meal photos in \
+this one request, labeled "Image 1", "Image 2", etc. Analyze EACH one \
+completely independently - they are different meals from possibly \
+different people, never combine or cross-reference foods between them.
+
+Respond ONLY with a JSON object of this exact shape, no other text:
+{{
+  "results": [
+    <result for Image 1, using the exact single-image JSON shape described above>,
+    <result for Image 2, same shape>,
+    ...
+  ]
+}}
+"results" must contain exactly {batch_size} objects, in the same order as \
+the images were shown."""
+
+
+def _call_gemini_batch(
+    images: list[tuple[bytes, str]], strict: bool, corrections: list[dict]
+) -> str:
+    contents = []
+    for i, (image_bytes, media_type) in enumerate(images, start=1):
+        contents.append(f"Image {i}:")
+        contents.append(types.Part.from_bytes(data=image_bytes, mime_type=media_type))
+
+    prompt_text = "Analyze every food in each of these meal photos independently."
+    if strict:
+        prompt_text += (
+            " Your previous response was not valid JSON. Respond with "
+            "ONLY the JSON object described in your instructions - no "
+            "markdown fences, no commentary, nothing before or after it."
+        )
+    contents.append(prompt_text)
+
+    response = client.models.generate_content(
+        model=MODEL_NAME,
+        contents=contents,
+        config=types.GenerateContentConfig(
+            system_instruction=_build_batch_system_prompt(corrections, len(images)),
+            response_mime_type="application/json",
+            max_output_tokens=MAX_OUTPUT_TOKENS + BATCH_MAX_OUTPUT_TOKENS_PER_IMAGE * len(images),
+            thinking_config=types.ThinkingConfig(thinking_budget=THINKING_BUDGET),
+        ),
+    )
+    return response.text or ""
+
+
+def estimate_calories_batch(
+    images: list[tuple[bytes, str]], corrections: list[dict] | None = None
+) -> dict:
+    """
+    images: list of (image_bytes, media_type) tuples, all already optimized.
+
+    Returns a dict with a "status" key:
+      - "ok": "results" is a list of finalized per-image results, same
+        length and order as `images`, each shaped exactly like a single
+        estimate_calories() return value.
+      - "failed": the WHOLE batch failed (see "reason", same semantics as
+        estimate_calories) - caller must apply this outcome to every job
+        in the batch, since it was one shared request.
+    """
+    corrections = corrections or []
+    parsed = None
+    last_failure_was_rate_limit = False
+
+    for attempt in range(1, MAX_ATTEMPTS + 1):
+        strict = attempt > 1
+        try:
+            raw_text = _call_gemini_batch(images, strict, corrections)
+        except Exception as exc:
+            is_retryable, suggested_wait = _classify_and_log(exc, attempt)
+            last_failure_was_rate_limit = isinstance(exc, genai_errors.APIError) and exc.code == 429
+
+            if not is_retryable or attempt == MAX_ATTEMPTS:
+                break
+
+            computed_backoff = min(BASE_BACKOFF_SECONDS * (2 ** (attempt - 1)), MAX_BACKOFF_SECONDS)
+            wait = min(suggested_wait, MAX_BACKOFF_SECONDS) if suggested_wait else computed_backoff
+            time.sleep(wait)
+            continue
+
+        parsed = _extract_json(raw_text)
+        if parsed is not None and isinstance(parsed.get("results"), list) and len(parsed["results"]) == len(images):
+            break
+        logger.warning(
+            "[JSON_PARSE] Batch response invalid or wrong length on attempt %d: %.200s",
+            attempt, raw_text,
+        )
+        parsed = None
+        if attempt < MAX_ATTEMPTS:
+            time.sleep(1)
+
+    if parsed is None:
+        return {"status": "failed", "reason": "rate_limited" if last_failure_was_rate_limit else "other"}
+
+    finalized = [_finalize_result(r) for r in parsed["results"]]
+    return {"status": "ok", "results": finalized}
 
 
 def _finalize_result(result: dict) -> dict:
