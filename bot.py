@@ -219,6 +219,9 @@ async def today(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not (user and user.get("target_kcal")):
         lines.append("\nℹ️ بۆ بینینی ئامانجی ڕۆژانەت، /profile بەکاربهێنە.")
 
+    _, used_today, daily_limit = storage.check_daily_limit(user_id)
+    lines.append(f"\n📸 شیکردنەوەی وێنە: {used_today}/{daily_limit} بۆ ئەمڕۆ")
+
     await update.message.reply_text("\n".join(lines))
 
 
@@ -374,6 +377,14 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         await update.message.reply_text(message)
         return
+
+    can_proceed, used_today, daily_limit = storage.check_daily_limit(user_id)
+    if not can_proceed:
+        await update.message.reply_text(
+            storage.LIMIT_REACHED_MESSAGE_KURDISH.format(used=used_today, limit=daily_limit)
+        )
+        return
+
     gemini_queue.mark_user_request(user_id)
 
     processing_msg = await update.message.reply_text("🔍 خواردنەکە شیکار دەکەم...")

@@ -36,7 +36,13 @@ client = genai.Client(
     ),
 )
 
-MODEL_NAME = "gemini-2.5-flash"  # fast, high-quality vision, generous free tier
+MODEL_NAME = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
+# Flash-Lite (gemini-2.5-flash-lite) has ~4x the free-tier daily quota and
+# is significantly cheaper if you go paid later. Set GEMINI_MODEL=gemini-2.5-flash-lite
+# in Railway to test it - swap back by unsetting the var. Recommend running
+# a real side-by-side comparison on actual food photos before committing;
+# we don't have hard vision-quality data for Flash-Lite on this specific
+# task (food recognition + portion estimation), only its general benchmarks.
 
 # IMPORTANT: gemini-2.5-flash spends part of max_output_tokens on internal
 # "thinking" before it writes the final answer. Too small a budget was the

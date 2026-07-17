@@ -85,6 +85,10 @@ def init_db():
         )
         """
     )
+    # 'tier' controls the daily analysis limit (see DAILY_LIMITS below).
+    # Default 'free' for everyone existing and new - premium is added by
+    # just changing this value for a user, no schema change needed later.
+    _add_missing_columns(conn, "users", {"tier": "TEXT DEFAULT 'free'"})
 
     conn.execute(
         """
@@ -252,6 +256,54 @@ def get_month_total(user_id: int) -> dict:
 
 def get_meal_count_today(user_id: int) -> int:
     return get_today_total(user_id)["meal_count"]
+
+
+# --- Daily usage limits --------------------------------------------------
+#
+# Counts SUCCESSFUL analyses only - meals only ever gets a row when
+# status == "ok" (verified: failed/rate-limited/no-food results are never
+# logged, see bot.py), so a user never loses quota to a bad photo, a busy
+# queue, or a cache hit not counting against them unfairly... actually a
+# cache hit DOES still log a meal (it's a real successful result, just
+# free to serve) - that's correct and intentional, it's still "their"
+# meal being tracked, the cache only saves the Gemini call, not the quota
+# slot. This is a deliberate design choice: the limit protects Gemini
+# quota from HEAVY USERS, not from the bot's own cache efficiency.
+#
+# Designed for trivial premium extension: tiers are a dict lookup and a
+# user's tier is a single column - upgrading someone is one UPDATE
+# statement, no schema change, no migration needed later.
+DAILY_LIMITS = {
+    "free": 5,
+    "premium": 50,  # generous, not truly unlimited - still protects shared quota
+}
+
+LIMIT_REACHED_MESSAGE_KURDISH = (
+    "📊 ئەمڕۆ گەیشتیتە سنووری {used}/{limit} شیکردنەوەی خۆراک بۆ به‌کارهێنه‌ری "
+    "بێبەرامبەر.\n\nسبەی دووبارە دەتوانیت بەکاریبهێنیت، یان چاوەڕێی وردەکاری "
+    "premium بکە بۆ سنووری زیاتر."
+)
+
+
+def get_daily_limit(tier: str) -> int:
+    return DAILY_LIMITS.get(tier, DAILY_LIMITS["free"])
+
+
+def check_daily_limit(user_id: int) -> tuple[bool, int, int]:
+    """Returns (can_proceed, used_today, limit). Checked BEFORE a photo
+    ever touches the Gemini queue - this is about protecting quota, so
+    it has to reject before submission, not after."""
+    user = get_user(user_id)
+    tier = (user or {}).get("tier") or "free"
+    limit = get_daily_limit(tier)
+    used = get_meal_count_today(user_id)
+    return used < limit, used, limit
+
+
+def set_user_tier(user_id: int, tier: str):
+    """The entire 'upgrade to premium' operation, today or in the future."""
+    ensure_user(user_id)
+    update_user_fields(user_id, tier=tier)
 
 
 def get_recent_meals(user_id: int, limit: int = 10) -> list[dict]:

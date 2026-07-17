@@ -310,7 +310,10 @@ async def _worker():
         try:
             # Opportunistic batching: grab whatever ELSE is already
             # waiting right now, never wait around hoping for more.
+            queue_depth_at_pickup = _queue.qsize()
             more_jobs = _drain_batch()
+            if queue_depth_at_pickup == 0:
+                logger.info("[BATCH_DIAG] Queue was empty when this job was picked up - no batching opportunity existed")
             batch = [first_job] + more_jobs
             for _ in more_jobs:
                 _queue.task_done()  # first_job's task_done() happens in the outer finally
