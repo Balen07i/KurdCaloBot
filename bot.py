@@ -261,8 +261,11 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     real_gemini_requests = s["successful_analyses"] + s["no_food_results"] + s["other_failures"] + s["rate_limited_failures"]
     await update.message.reply_text(
         f"📈 ئاماری کارکردن (تیمی {s['uptime_minutes']} خولەک):\n\n"
-        f"📸 کۆی داواکاریەکان: {s['total_submitted']}\n"
+        f"📥 کۆی وێنەی وەرگیراو: {s['total_photos_received']}\n"
+        f"📸 کۆی داواکاریەکانی گەیشتوو بۆ نۆرە: {s['total_submitted']}\n"
         f"📡 داواکاری ڕاستەقینەی Gemini: {real_gemini_requests}\n\n"
+        f"🚫 ڕاگیراو بە سنووری ڕۆژانە: {s['daily_limit_blocks']}\n"
+        f"⏳ ڕاگیراو بە کوڵداندنەوە: {s['cooldown_rejections']}\n\n"
         f"♻️ کاش هیت (وردەکاری): {s['cache_hits']}\n"
         f"🧩 کاش هیت (نزیک وێنە): {s['phash_cache_hits']}\n"
         f"📦 داواکاری قرزکراو بە batch: {s['batched_requests_saved']}\n"
@@ -277,6 +280,9 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"⏱️ ئێستا خێرایی نێوان داواکاریەکان: {s['current_pacing_interval']}s\n"
         f"⚡ کورتکردنەوەی خێرا: {circuit_line}\n"
         f"📥 قەبارەی نۆرە: {s['queue_depth']}\n"
+        f"📏 تێکڕای قەبارەی نۆرە لە کاتی وەرگرتن: {s['avg_queue_depth_at_pickup']} "
+        f"(زۆرترین: {s['queue_depth_max']})\n"
+        f"🔀 هەلی batch کردن: {s['batching_opportunities']} لە کۆی {s['queue_depth_samples']}\n"
         f"💾 بیرگە: {s['cached_entries']} خواردن، {s['tracked_users']} بەکارهێنەر"
     )
 
@@ -365,6 +371,7 @@ def format_result(result: dict, user: dict | None) -> str:
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
+    gemini_queue.record_photo_received()
 
     # Per-user cooldown check happens BEFORE we even touch the queue, so a
     # spammy user can't burn shared Gemini quota that other users need.
@@ -375,19 +382,14 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if cooldown_remaining > gemini_queue.USER_COOLDOWN_SECONDS
             else gemini_queue.COOLDOWN_MESSAGE_KURDISH
         )
+        gemini_queue.record_cooldown_block()
         await update.message.reply_text(message)
-        return
-
-    can_proceed, used_today, daily_limit = storage.check_daily_limit(user_id)
-    if not can_proceed:
-        await update.message.reply_text(
-            storage.LIMIT_REACHED_MESSAGE_KURDISH.format(used=used_today, limit=daily_limit)
-        )
         return
 
     gemini_queue.mark_user_request(user_id)
 
     processing_msg = await update.message.reply_text("🔍 خواردنەکە شیکار دەکەم...")
+    slot_reserved = False
 
     try:
         photo = update.message.photo[-1]
@@ -401,11 +403,24 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         image_bytes = await asyncio.to_thread(optimize_image, image_bytes)
 
         # Local pre-filter: catches obviously-invalid images (blank/near-
-        # black frames) before they'd ever cost a Gemini request. Fails
-        # open - only rejects when near-certain, never blocks a real photo.
+        # black frames) before they'd ever cost a Gemini request OR a
+        # daily-limit slot. Fails open - only rejects when near-certain.
         is_valid, reject_reason = await asyncio.to_thread(check_image_locally, image_bytes)
         if not is_valid:
             await processing_msg.edit_text(reject_reason)
+            return
+
+        # Reserve the daily-limit slot ATOMICALLY, synchronously, right
+        # before submission - no `await` between the check and the
+        # increment, which is what makes this race-proof under
+        # concurrent_updates=True (see storage.reserve_daily_slot for the
+        # full explanation of the bug this fixes).
+        slot_reserved, used_today, daily_limit = storage.reserve_daily_slot(user_id)
+        if not slot_reserved:
+            gemini_queue.record_daily_limit_block()
+            await processing_msg.edit_text(
+                storage.LIMIT_REACHED_MESSAGE_KURDISH.format(used=used_today, limit=daily_limit)
+            )
             return
 
         corrections = storage.get_all_corrections()
@@ -444,6 +459,9 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception:
         logger.exception("[UNEXPECTED] Error in handle_photo")
         await processing_msg.edit_text(PHOTO_TIPS_MESSAGE)
+    finally:
+        if slot_reserved:
+            storage.release_daily_slot(user_id)
 
 
 # --- Callback (button) handling -------------------------------------------

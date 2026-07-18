@@ -289,14 +289,72 @@ def get_daily_limit(tier: str) -> int:
     return DAILY_LIMITS.get(tier, DAILY_LIMITS["free"])
 
 
-def check_daily_limit(user_id: int) -> tuple[bool, int, int]:
-    """Returns (can_proceed, used_today, limit). Checked BEFORE a photo
-    ever touches the Gemini queue - this is about protecting quota, so
-    it has to reject before submission, not after."""
+# --- Atomic reservation (fixes a real race condition) ---------------------
+#
+# BUG THIS FIXES: check_daily_limit() alone reads the count of meals
+# already LOGGED in the DB - but a meal is only logged after the full
+# Gemini round-trip completes (several seconds). With concurrent_updates=
+# True (needed for other good reasons - see bot.py), multiple photos from
+# the SAME user sent rapidly run as concurrent handlers. All of them could
+# read the same "4 used" count and all pass the check before any of their
+# meals are actually written back - letting more requests through than
+# the limit allows and consuming real Gemini quota for it.
+#
+# Fix: reserve_daily_slot() checks AND increments in one synchronous call
+# with no `await` inside it. Asyncio can only switch between coroutines at
+# an `await` point, so this function body can never be interleaved by
+# another concurrent handler - the check-then-increment is now atomic.
+# release_daily_slot() must be called once the real outcome is known
+# (success or failure) so a failed/no-food analysis doesn't unfairly cost
+# the user a slot, and so the reservation doesn't double-count once the
+# real meal row exists in the DB.
+_daily_reservations: dict[int, tuple[str, int]] = {}
+
+
+def _today_str() -> str:
+    return datetime.utcnow().strftime("%Y-%m-%d")
+
+
+def reserve_daily_slot(user_id: int) -> tuple[bool, int, int]:
+    """Returns (reserved, used_after_this_reservation, limit)."""
+    today = _today_str()
+    date_str, reserved_count = _daily_reservations.get(user_id, (today, 0))
+    if date_str != today:
+        reserved_count = 0  # new day
+
+    committed = get_meal_count_today(user_id)  # already-logged meals
+    total_used = committed + reserved_count     # + in-flight, not yet logged
+
     user = get_user(user_id)
     tier = (user or {}).get("tier") or "free"
     limit = get_daily_limit(tier)
-    used = get_meal_count_today(user_id)
+
+    if total_used >= limit:
+        return False, total_used, limit
+
+    _daily_reservations[user_id] = (today, reserved_count + 1)
+    return True, total_used + 1, limit
+
+
+def release_daily_slot(user_id: int):
+    """Call after the outcome is known, success or failure - see the
+    docstring above for why this must always be called exactly once per
+    successful reserve_daily_slot() call."""
+    today = _today_str()
+    date_str, reserved_count = _daily_reservations.get(user_id, (today, 0))
+    if date_str == today and reserved_count > 0:
+        _daily_reservations[user_id] = (today, reserved_count - 1)
+
+
+def check_daily_limit(user_id: int) -> tuple[bool, int, int]:
+    """Read-only status check (for /today display) - does NOT reserve a
+    slot. Use reserve_daily_slot() before actually submitting a photo."""
+    committed = get_meal_count_today(user_id)
+    _, reserved_count = _daily_reservations.get(user_id, (_today_str(), 0))
+    used = committed + reserved_count
+    user = get_user(user_id)
+    tier = (user or {}).get("tier") or "free"
+    limit = get_daily_limit(tier)
     return used < limit, used, limit
 
 

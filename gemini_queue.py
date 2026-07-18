@@ -125,12 +125,18 @@ _result_cache: dict[str, tuple[float, dict]] = {}
 _phash_index: dict[str, tuple[int, float]] = {}  # image_hash -> (dhash, inserted_at)
 
 _stats = {
+    "total_photos_received": 0,
     "total_submitted": 0,
     "cache_hits": 0,
     "phash_cache_hits": 0,
     "batched_requests_saved": 0,  # extra images that rode along in a batch instead of their own request
+    "queue_depth_samples": 0,
+    "queue_depth_sum": 0,
+    "queue_depth_max": 0,
+    "batching_opportunities": 0,
     "queue_full_rejections": 0,
     "cooldown_rejections": 0,
+    "daily_limit_blocks": 0,
     "rapid_fire_escalations": 0,
     "successful_analyses": 0,
     "no_food_results": 0,
@@ -311,9 +317,18 @@ async def _worker():
             # Opportunistic batching: grab whatever ELSE is already
             # waiting right now, never wait around hoping for more.
             queue_depth_at_pickup = _queue.qsize()
-            more_jobs = _drain_batch()
-            if queue_depth_at_pickup == 0:
+            _stats["queue_depth_samples"] += 1
+            _stats["queue_depth_sum"] += queue_depth_at_pickup
+            _stats["queue_depth_max"] = max(_stats["queue_depth_max"], queue_depth_at_pickup)
+            if queue_depth_at_pickup > 0:
+                _stats["batching_opportunities"] += 1
+                logger.info(
+                    "[BATCH_DIAG] %d job(s) already queued at pickup - batching opportunity",
+                    queue_depth_at_pickup,
+                )
+            else:
                 logger.info("[BATCH_DIAG] Queue was empty when this job was picked up - no batching opportunity existed")
+            more_jobs = _drain_batch()
             batch = [first_job] + more_jobs
             for _ in more_jobs:
                 _queue.task_done()  # first_job's task_done() happens in the outer finally
@@ -442,16 +457,33 @@ async def submit_photo_job(
     return result, queue_position
 
 
+def record_photo_received():
+    _stats["total_photos_received"] += 1
+
+
+def record_cooldown_block():
+    _stats["cooldown_rejections"] += 1
+
+
+def record_daily_limit_block():
+    _stats["daily_limit_blocks"] += 1
+
+
 def get_stats_summary() -> dict:
     uptime_seconds = time.monotonic() - _stats["started_at"]
     total = _stats["total_submitted"]
     cache_hit_rate = ((_stats["cache_hits"] + _stats["phash_cache_hits"]) / total * 100) if total else 0.0
+    avg_queue_depth = (
+        _stats["queue_depth_sum"] / _stats["queue_depth_samples"]
+        if _stats["queue_depth_samples"] else 0.0
+    )
     return {
         **_stats,
         "uptime_minutes": round(uptime_seconds / 60, 1),
         "cache_hit_rate_pct": round(cache_hit_rate, 1),
         "current_pacing_interval": round(_current_interval, 1),
         "queue_depth": _queue.qsize() if _queue else 0,
+        "avg_queue_depth_at_pickup": round(avg_queue_depth, 2),
         "circuit_open": time.monotonic() < _circuit_open_until,
         "cached_entries": len(_result_cache),
         "tracked_users": len(_last_user_request),

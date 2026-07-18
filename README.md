@@ -2,7 +2,21 @@
 
 Two free API keys, no credit card, no paid services anywhere in this project.
 
-## Quota-optimization architecture (this version)
+## This version: race condition fix + diagnostics + prompt improvements
+
+**Real bug found and fixed:** the daily-limit check read the count of already-*logged* meals, but a meal only logs after the full Gemini round-trip (several seconds). With `concurrent_updates=True`, multiple rapid photos from the same user ran as concurrent handlers and could all pass the check before any of them wrote back - exactly matching your report of 6 requests through a 5-limit. Fixed with an atomic reserve/release pair (`storage.reserve_daily_slot`/`release_daily_slot`) - the check-and-increment now happens in one synchronous call with no `await` inside it, which asyncio guarantees can't be interleaved. Proved this two ways: reproduced the old buggy behavior standalone (6/6 succeeded), then confirmed the fix (exactly 5/6 succeed, matching the limit).
+
+**Stats gaps closed:** `cooldown_rejections` was defined but never actually incremented anywhere - fixed. Added `daily_limit_blocks` and a true `total_photos_received` counter, so `/stats` can now distinguish total requests, real Gemini requests, and each block reason separately, as asked.
+
+**Batching diagnostics:** added average/max queue-depth tracking and a `batching_opportunities` counter, visible directly in `/stats` - no more log-grepping needed to answer "was batching even possible." Rejected the artificial collection-window idea again on the same grounds as last time: it would add latency to every solo request to occasionally catch a batch, and there's still no data suggesting that trade is worth it.
+
+**Prompt improvements:** added an explicit verification step ("could you point to the exact pixels of this food? if not, remove it") directly targeting the phantom-bread false positive; added brand-name preservation (keeps "Ülker Biskrem" instead of a generic description when packaging is legible); strengthened the natural-Kurdish-naming instruction to prefer authentic local dish names over generic translations.
+
+**Real gap found in review (item 11):** the Gemini client had no request timeout configured - a hung call (rare, but possible) would have blocked the single worker, and therefore every queued user, forever with no recovery path. Added a 45s client-side timeout.
+
+**Deferred again, unchanged reasoning:** food database expansion, nutrition-value refinement, and the full analytics dashboard remain real asks but too large for this pass alongside a genuine concurrency bug fix.
+
+## Quota-optimization architecture (previous version)
 
 Reframed around one fact: Gemini's free-tier RPM is a permanent, fixed ceiling that no code change raises. So this round is entirely about minimizing real Gemini requests, ranked and implemented in order of actual impact - full reasoning and rejected alternatives below.
 
