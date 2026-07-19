@@ -60,7 +60,7 @@ def init_db():
     )
     _add_missing_columns(
         conn, "meals",
-        {"foods_json": "TEXT", "note_kurdish": "TEXT", "insight_kurdish": "TEXT"},
+        {"foods_json": "TEXT", "note_kurdish": "TEXT", "insight_kurdish": "TEXT", "dhash": "INTEGER"},
     )
 
     conn.execute(
@@ -101,6 +101,11 @@ def init_db():
         )
         """
     )
+    # Links a correction back to the photo's fingerprint (see
+    # analysis_fingerprints below) so future training can distinguish
+    # "Gemini got this right" from "Gemini got this wrong, corrected to X"
+    # - a much stronger training signal than uncorrected examples alone.
+    _add_missing_columns(conn, "corrections", {"dhash": "INTEGER"})
 
     # Foundation for a POSSIBLE future local-recognition layer (see
     # README) - logs every successful analysis's dHash fingerprint
@@ -122,6 +127,25 @@ def init_db():
             created_at TEXT NOT NULL
         )
         """
+    )
+    _add_missing_columns(
+        conn, "analysis_fingerprints",
+        {
+            # Full structured per-food data (name, portion, macros,
+            # matched_glossary), not just a summary string - this is what
+            # actually makes the table useful as future training labels
+            # rather than a rough log.
+            "foods_json": "TEXT",
+            # How many of the detected foods matched the static glossary.
+            # Rows with 0 are the most valuable to review later - they
+            # represent foods Gemini identified that aren't in our
+            # glossary yet, i.e. real gaps in local coverage.
+            "matched_glossary_count": "INTEGER DEFAULT 0",
+            # Flipped to 1 by mark_fingerprint_corrected() when a user
+            # later corrects this exact photo - a stronger training
+            # signal than an uncorrected example.
+            "was_corrected": "INTEGER DEFAULT 0",
+        },
     )
 
     # Every /today, /week, /month, /history query filters on exactly this
@@ -151,14 +175,18 @@ def log_analysis_fingerprint(dhash_value: int | None, result: dict):
     try:
         foods = result.get("foods", [])
         food_summary = "، ".join(f["name_kurdish"] for f in foods)
+        matched_count = sum(1 for f in foods if f.get("matched_glossary"))
         conn = _connect()
         conn.execute(
             """
-            INSERT INTO analysis_fingerprints (dhash, food_summary, total_kcal, confidence, created_at)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO analysis_fingerprints
+                (dhash, food_summary, total_kcal, confidence, created_at,
+                 foods_json, matched_glossary_count)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
             (dhash_value, food_summary, result.get("total_kcal", 0),
-             result.get("confidence", ""), datetime.utcnow().isoformat()),
+             result.get("confidence", ""), datetime.utcnow().isoformat(),
+             json.dumps(foods, ensure_ascii=False), matched_count),
         )
         conn.commit()
         conn.close()
@@ -166,9 +194,27 @@ def log_analysis_fingerprint(dhash_value: int | None, result: dict):
         pass  # never let logging break the real flow
 
 
+def mark_fingerprint_corrected(dhash_value: int | None):
+    """Called when a user corrects a meal - flags the matching
+    fingerprint(s) as corrected, a stronger training signal than an
+    uncorrected example. Never raises, same reasoning as above."""
+    if dhash_value is None:
+        return
+    try:
+        conn = _connect()
+        conn.execute(
+            "UPDATE analysis_fingerprints SET was_corrected = 1 WHERE dhash = ?",
+            (dhash_value,),
+        )
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass
+
+
 # --- Meals ---------------------------------------------------------------
 
-def log_meal(user_id: int, result: dict) -> int:
+def log_meal(user_id: int, result: dict, dhash_value: int | None = None) -> int:
     """Inserts a meal (one row per photo) and returns its row id."""
 
     foods = result.get("foods", [])
@@ -181,8 +227,8 @@ def log_meal(user_id: int, result: dict) -> int:
         INSERT INTO meals (user_id, food_name_kurdish, food_name_english,
                             kcal, protein_g, carbs_g, fat_g, confidence,
                             matched_glossary, feedback, created_at,
-                            foods_json, note_kurdish, insight_kurdish)
-        VALUES (?, ?, '', ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?)
+                            foods_json, note_kurdish, insight_kurdish, dhash)
+        VALUES (?, ?, '', ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?)
         """,
         (
             user_id, food_summary,
@@ -192,6 +238,7 @@ def log_meal(user_id: int, result: dict) -> int:
             datetime.utcnow().isoformat(),
             json.dumps(foods, ensure_ascii=False),
             result.get("note_kurdish", ""), result.get("insight_kurdish", ""),
+            dhash_value,
         ),
     )
     conn.commit()
@@ -315,8 +362,29 @@ def _today_str() -> str:
     return datetime.utcnow().strftime("%Y-%m-%d")
 
 
+_reservation_op_count = 0
+
+
+def _cleanup_stale_reservations():
+    """Same opportunistic-cleanup pattern as gemini_queue's cooldown
+    tracking - removes entries from previous days with nothing in-flight,
+    so this dict doesn't grow forever across the app's lifetime."""
+    today = _today_str()
+    stale = [
+        uid for uid, (date_str, count) in _daily_reservations.items()
+        if date_str != today and count == 0
+    ]
+    for uid in stale:
+        del _daily_reservations[uid]
+
+
 def reserve_daily_slot(user_id: int) -> tuple[bool, int, int]:
     """Returns (reserved, used_after_this_reservation, limit)."""
+    global _reservation_op_count
+    _reservation_op_count += 1
+    if _reservation_op_count % 200 == 0:
+        _cleanup_stale_reservations()
+
     today = _today_str()
     date_str, reserved_count = _daily_reservations.get(user_id, (today, 0))
     if date_str != today:
@@ -441,17 +509,18 @@ def set_pending_correction(user_id: int, meal_id: int | None):
 
 # --- Corrections (the free "learning" loop) -------------------------------
 
-def save_correction(user_id: int, wrong_name: str, correct_name_kurdish: str):
+def save_correction(user_id: int, wrong_name: str, correct_name_kurdish: str, dhash_value: int | None = None):
     conn = _connect()
     conn.execute(
         """
-        INSERT INTO corrections (user_id, wrong_name, correct_name_kurdish, created_at)
-        VALUES (?, ?, ?, ?)
+        INSERT INTO corrections (user_id, wrong_name, correct_name_kurdish, created_at, dhash)
+        VALUES (?, ?, ?, ?, ?)
         """,
-        (user_id, wrong_name, correct_name_kurdish, datetime.utcnow().isoformat()),
+        (user_id, wrong_name, correct_name_kurdish, datetime.utcnow().isoformat(), dhash_value),
     )
     conn.commit()
     conn.close()
+    mark_fingerprint_corrected(dhash_value)
 
 
 def get_all_corrections(limit: int = 200) -> list[dict]:

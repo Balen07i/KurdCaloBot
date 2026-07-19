@@ -358,6 +358,17 @@ Base confidence ONLY on: image clarity/lighting, how clearly each food is \
 visible, how certain the identification is, and how visible the portion is. \
 The NUMBER OF FOOD ITEMS is never itself a reason to lower confidence.
 
+UNCERTAIN IDENTIFICATION - be honest, not confidently wrong:
+If you cannot confidently identify a SPECIFIC food (not the confusable-pair \
+case below, just general uncertainty - e.g. an unfamiliar stew, a dish \
+partly hidden by another, a sauce you don't recognize), do NOT invent a \
+specific dish name to sound complete. Instead, use an honest general label \
+(e.g. "خواردنێکی نەناسراو" / "stew, exact dish unclear") and set that food's \
+contribution to "نزم" confidence overall, with note_kurdish explaining what \
+made it hard to identify. A vague-but-honest label beats a specific-but-\
+invented one - the user can always correct it, but a confident wrong guess \
+teaches them nothing and may be trusted at face value.
+
 GENUINE AMBIGUITY - use "alternatives", not a guess:
 If (and ONLY if) you genuinely cannot tell apart two visually similar foods \
 (see the confusable pairs above) even after looking carefully, do NOT \

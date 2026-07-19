@@ -415,10 +415,14 @@ def start_worker():
 
 async def submit_photo_job(
     image_bytes: bytes, media_type: str, corrections: list[dict]
-) -> tuple[dict, int]:
+) -> tuple[dict, int, int | None]:
     """
     Enqueues an ALREADY-OPTIMIZED, ALREADY-LOCALLY-VALIDATED photo for
-    analysis and waits for the result. Returns (result_dict, queue_position).
+    analysis and waits for the result.
+    Returns (result_dict, queue_position, dhash_value) - the dhash is
+    returned so callers (bot.py, for fingerprint logging) don't need to
+    recompute it a second time; it was already computed here for the
+    near-duplicate cache lookup.
     """
     _stats["total_submitted"] += 1
 
@@ -427,7 +431,7 @@ async def submit_photo_job(
     if cached is not None:
         logger.info("[CACHE] Exact duplicate image detected, reusing cached result")
         _stats["cache_hits"] += 1
-        return cached, 0
+        return cached, 0, None
 
     dhash_value = compute_dhash(image_bytes)
     near_cached = _get_cached_by_phash(dhash_value)
@@ -435,7 +439,7 @@ async def submit_photo_job(
         logger.info("[PHASH] Near-duplicate image detected (Hamming <= %d), reusing cached result", PHASH_HAMMING_THRESHOLD)
         _stats["phash_cache_hits"] += 1
         _store_cache(image_hash, near_cached, dhash_value)  # also index under this exact hash for next time
-        return near_cached, 0
+        return near_cached, 0, dhash_value
 
     if _queue is None:
         start_worker()
@@ -443,7 +447,7 @@ async def submit_photo_job(
     if _queue.qsize() >= MAX_QUEUE_SIZE:
         logger.warning("[QUEUE] Rejecting submission - queue full (%d items)", _queue.qsize())
         _stats["queue_full_rejections"] += 1
-        return {"status": "failed", "reason": "queue_full"}, _queue.qsize()
+        return {"status": "failed", "reason": "queue_full"}, _queue.qsize(), dhash_value
 
     queue_position = _queue.qsize()
 
@@ -454,7 +458,7 @@ async def submit_photo_job(
     if result.get("status") == "ok":
         _store_cache(image_hash, result, dhash_value)
 
-    return result, queue_position
+    return result, queue_position, dhash_value
 
 
 def record_photo_received():

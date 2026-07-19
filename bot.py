@@ -25,7 +25,7 @@ from nutrition import (
     calculate_targets,
 )
 import gemini_queue
-from vision import check_image_locally, compute_dhash, optimize_image
+from vision import MODEL_NAME, check_image_locally, optimize_image
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -260,7 +260,8 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     circuit_line = "🔴 داخراوە (کورتکردنەوەی خێرا چالاکە)" if s["circuit_open"] else "🟢 کراوەیە"
     real_gemini_requests = s["successful_analyses"] + s["no_food_results"] + s["other_failures"] + s["rate_limited_failures"]
     await update.message.reply_text(
-        f"📈 ئاماری کارکردن (تیمی {s['uptime_minutes']} خولەک):\n\n"
+        f"📈 ئاماری کارکردن (تیمی {s['uptime_minutes']} خولەک):\n"
+        f"🤖 مۆدێل: {MODEL_NAME}\n\n"
         f"📥 کۆی وێنەی وەرگیراو: {s['total_photos_received']}\n"
         f"📸 کۆی داواکاریەکانی گەیشتوو بۆ نۆرە: {s['total_submitted']}\n"
         f"📡 داواکاری ڕاستەقینەی Gemini: {real_gemini_requests}\n\n"
@@ -424,7 +425,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         corrections = storage.get_all_corrections()
-        result, queue_position = await gemini_queue.submit_photo_job(
+        result, queue_position, dhash_value = await gemini_queue.submit_photo_job(
             image_bytes, "image/jpeg", corrections
         )
 
@@ -440,8 +441,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if result["status"] == "ok":
             user = storage.get_user(user_id)
-            meal_id = storage.log_meal(user_id, result)
-            dhash_value = await asyncio.to_thread(compute_dhash, image_bytes)
+            meal_id = storage.log_meal(user_id, result, dhash_value)
             storage.log_analysis_fingerprint(dhash_value, result)
             await processing_msg.edit_text(
                 format_result(result, user),
@@ -559,7 +559,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if user and user.get("pending_correction_meal_id"):
         meal = storage.get_meal(user["pending_correction_meal_id"])
         wrong_name = meal["food_name_kurdish"] if meal else "نەناسراو"
-        storage.save_correction(user_id, wrong_name=wrong_name, correct_name_kurdish=text)
+        meal_dhash = meal.get("dhash") if meal else None
+        storage.save_correction(user_id, wrong_name=wrong_name, correct_name_kurdish=text, dhash_value=meal_dhash)
         storage.set_pending_correction(user_id, None)
         await update.message.reply_text(
             f"✅ سوپاس! لە جاری داهاتوودا، خواردنی وەک ئەمە باشتر دەناسمەوە."

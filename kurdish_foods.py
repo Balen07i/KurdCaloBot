@@ -355,6 +355,200 @@ KURDISH_FOOD_GLOSSARY = [
         "aliases": ["egg", "fried or boiled egg"],
         "kcal": 90, "protein_g": 6, "carbs_g": 1, "fat_g": 7,
     },
+
+    # --- Herbs & aromatics -----------------------------------------------
+    {
+        "name": "پونگ", "emoji": "🌿",
+        "aliases": ["mint", "pouneh", "wild mint"],
+        "kcal": 5, "protein_g": 0, "carbs_g": 1, "fat_g": 0,
+    },
+    {
+        "name": "جەعدە", "emoji": "🌿",
+        "aliases": ["basil", "rihan"],
+        "kcal": 5, "protein_g": 0, "carbs_g": 1, "fat_g": 0,
+    },
+    {
+        "name": "توتراوی سەوز", "emoji": "🌿",
+        "aliases": ["fresh herb plate", "sabzi khordan", "mixed herbs side"],
+        "kcal": 25, "protein_g": 1, "carbs_g": 4, "fat_g": 0,
+    },
+    {
+        "name": "جۆزە", "emoji": "🧄",
+        "aliases": ["garlic"],
+        "kcal": 15, "protein_g": 1, "carbs_g": 3, "fat_g": 0,
+    },
+
+    # --- More dairy ------------------------------------------------------
+    {
+        "name": "پەنیری کوردی", "emoji": "🧀",
+        "aliases": ["Kurdish white cheese", "panire kurdi"],
+        "kcal": 280, "protein_g": 18, "carbs_g": 3, "fat_g": 22,
+    },
+    {
+        "name": "کەشک", "emoji": "🥣",
+        "aliases": ["Kashk", "dried whey", "kashk sauce"],
+        "kcal": 110, "protein_g": 9, "carbs_g": 8, "fat_g": 4,
+    },
+    {
+        "name": "قەیماغ", "emoji": "🧈",
+        "aliases": ["Kaymak", "clotted cream"],
+        "kcal": 340, "protein_g": 3, "carbs_g": 2, "fat_g": 36,
+    },
+    {
+        "name": "دۆشاو", "emoji": "🍯",
+        "aliases": ["grape molasses", "doshab"],
+        "kcal": 50, "protein_g": 0, "carbs_g": 13, "fat_g": 0,
+    },
+
+    # --- More bread --------------------------------------------------
+    {
+        "name": "نانی تەنوور", "emoji": "🫓",
+        "aliases": ["tandoor bread", "taftan", "clay-oven flatbread"],
+        "kcal": 200, "protein_g": 6, "carbs_g": 38, "fat_g": 2,
+    },
+    {
+        "name": "نانی ڕۆن", "emoji": "🫓",
+        "aliases": ["oil flatbread", "nan roghan"],
+        "kcal": 230, "protein_g": 5, "carbs_g": 35, "fat_g": 8,
+    },
+    {
+        "name": "سیمیت", "emoji": "🥯",
+        "aliases": ["Simit", "sesame bread ring"],
+        "kcal": 280, "protein_g": 8, "carbs_g": 48, "fat_g": 6,
+    },
+
+    # --- Street food & snacks ----------------------------------------
+    {
+        "name": "دۆنەر", "emoji": "🌯",
+        "aliases": ["Doner", "shawarma", "durum"],
+        "kcal": 480, "protein_g": 28, "carbs_g": 45, "fat_g": 22,
+    },
+    {
+        "name": "لەحماجوون", "emoji": "🍕",
+        "aliases": ["Lahmacun", "Turkish flatbread pizza"],
+        "kcal": 300, "protein_g": 12, "carbs_g": 40, "fat_g": 10,
+    },
+    {
+        "name": "سەمبووسە", "emoji": "🥟",
+        "aliases": ["Samosa", "sambousek", "fried pastry"],
+        "kcal": 260, "protein_g": 7, "carbs_g": 28, "fat_g": 14,
+    },
+    {
+        "name": "پەتاتەی سوورکراو", "emoji": "🍟",
+        "aliases": ["french fries", "fried potato"],
+        "kcal": 320, "protein_g": 4, "carbs_g": 42, "fat_g": 15,
+    },
+    {
+        "name": "کۆرن دۆگ", "emoji": "🌭",
+        "aliases": ["corn dog", "sausage on a stick"],
+        "kcal": 340, "protein_g": 10, "carbs_g": 30, "fat_g": 20,
+    },
+    {
+        "name": "کاولۆرمە", "emoji": "🌽",
+        "aliases": ["grilled corn", "corn on the cob"],
+        "kcal": 150, "protein_g": 5, "carbs_g": 32, "fat_g": 2,
+    },
+
+    # --- Restaurant meals --------------------------------------------
+    {
+        "name": "تیکەی مریشک", "emoji": "🍢",
+        "aliases": ["chicken tikka", "chicken skewer"],
+        "kcal": 350, "protein_g": 40, "carbs_g": 3, "fat_g": 18,
+    },
+    {
+        "name": "کۆفتەی کوردی", "emoji": "🍖",
+        "aliases": ["Kurdish kofta", "meatball skewer"],
+        "kcal": 400, "protein_g": 28, "carbs_g": 8, "fat_g": 28,
+    },
+    {
+        "name": "مەندی", "emoji": "🍛",
+        "aliases": ["Mandi", "Yemeni-style rice and meat"],
+        "kcal": 600, "protein_g": 35, "carbs_g": 60, "fat_g": 22,
+    },
+    {
+        "name": "مەکلووبە", "emoji": "🍚",
+        "aliases": ["Maqluba", "upside-down rice"],
+        "kcal": 550, "protein_g": 25, "carbs_g": 65, "fat_g": 20,
+    },
+
+    # --- More vegetables & fruits --------------------------------------
+    {
+        "name": "کەلەم", "emoji": "🥬",
+        "aliases": ["cabbage"],
+        "kcal": 25, "protein_g": 1, "carbs_g": 6, "fat_g": 0,
+    },
+    {
+        "name": "گەزەر", "emoji": "🥕",
+        "aliases": ["carrot"],
+        "kcal": 40, "protein_g": 1, "carbs_g": 10, "fat_g": 0,
+    },
+    {
+        "name": "خواردنی زەردەلوو", "emoji": "🍑",
+        "aliases": ["dried apricot", "zerdelu"],
+        "kcal": 60, "protein_g": 1, "carbs_g": 15, "fat_g": 0,
+    },
+    {
+        "name": "هەنجیر", "emoji": "🍈",
+        "aliases": ["fig"],
+        "kcal": 75, "protein_g": 1, "carbs_g": 19, "fat_g": 0,
+    },
+    {
+        "name": "بەرقوق", "emoji": "🍑",
+        "aliases": ["plum"],
+        "kcal": 45, "protein_g": 1, "carbs_g": 11, "fat_g": 0,
+    },
+
+    # --- Sauces & condiments (more) -----------------------------------
+    {
+        "name": "مایۆنێز", "emoji": "🥫",
+        "aliases": ["mayonnaise"],
+        "kcal": 95, "protein_g": 0, "carbs_g": 1, "fat_g": 10,
+    },
+    {
+        "name": "کێچەب", "emoji": "🍅",
+        "aliases": ["ketchup"],
+        "kcal": 20, "protein_g": 0, "carbs_g": 5, "fat_g": 0,
+    },
+    {
+        "name": "سۆسی سیر", "emoji": "🧄",
+        "aliases": ["garlic sauce", "toum"],
+        "kcal": 150, "protein_g": 0, "carbs_g": 2, "fat_g": 16,
+    },
+
+    # --- Common brand-name snacks & drinks (recognized by package/logo) --
+    # NOTE: per BRAND RECOGNITION in the prompt, these should be identified
+    # by their actual printed name when the package is legible, not a
+    # generic description - having them in the glossary reinforces that.
+    {
+        "name": "بیسکرێمی ئولکەر", "emoji": "🍫",
+        "aliases": ["Ulker Biskrem", "Biskrem", "chocolate cream biscuit"],
+        "kcal": 130, "protein_g": 2, "carbs_g": 16, "fat_g": 7,
+    },
+    {
+        "name": "چیپسی لەیز", "emoji": "🍟",
+        "aliases": ["Lays chips", "potato chips bag"],
+        "kcal": 160, "protein_g": 2, "carbs_g": 15, "fat_g": 10,
+    },
+    {
+        "name": "کۆکاکۆلا", "emoji": "🥤",
+        "aliases": ["Coca-Cola", "Coke", "cola can or bottle"],
+        "kcal": 140, "protein_g": 0, "carbs_g": 39, "fat_g": 0,
+    },
+    {
+        "name": "پێپسی", "emoji": "🥤",
+        "aliases": ["Pepsi"],
+        "kcal": 150, "protein_g": 0, "carbs_g": 41, "fat_g": 0,
+    },
+    {
+        "name": "نێستلێ کیتکات", "emoji": "🍫",
+        "aliases": ["KitKat", "Nestle KitKat"],
+        "kcal": 210, "protein_g": 3, "carbs_g": 27, "fat_g": 11,
+    },
+    {
+        "name": "دانۆنی یۆگورت", "emoji": "🥛",
+        "aliases": ["Danone yogurt", "Danonino"],
+        "kcal": 90, "protein_g": 4, "carbs_g": 12, "fat_g": 3,
+    },
 ]
 
 # --- Commonly confused pairs -----------------------------------------
