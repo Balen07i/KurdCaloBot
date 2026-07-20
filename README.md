@@ -2,7 +2,21 @@
 
 Two free API keys, no credit card, no paid services anywhere in this project.
 
-## This version: race condition fix + diagnostics + prompt improvements
+## This version: real A/B testing infrastructure, and an honest read on the production data
+
+**What your data actually tells us:** 0% cache hits and ~0% batching opportunities over several real days means people genuinely don't send duplicate or near-simultaneous photos - not that thresholds are wrong. No further tuning of either system will help; that's not a bug to fix, it's a property of how this bot gets used. I'm not touching either system further based on this.
+
+**Database expansion doesn't reduce Gemini calls.** Worth being explicit: a bigger `kurdish_foods.py` improves the *accuracy* of results Gemini already returns - it does not change whether Gemini gets called. These are separate levers. Quota reduction has to come from somewhere else.
+
+**What I built instead - real Flash vs Flash-Lite A/B testing:**
+- `AB_TEST_MODEL` and `AB_TEST_PERCENTAGE` env vars. Set `AB_TEST_MODEL=gemini-2.5-flash-lite` and `AB_TEST_PERCENTAGE=20` (or whatever split you want) and 20% of *users* (not random requests - deterministic per-user via a hash split, so the same user always gets the same model, keeping the comparison uncontaminated) start using Flash-Lite immediately, no deploy needed to change the split.
+- Every meal now records which model produced it. `/stats` shows a live comparison: meal count, high-confidence rate, and correction rate, per model.
+- I can't call the live Gemini API from this sandbox to benchmark this myself - this is the honest alternative: real production data, automatically collected, instead of a guess.
+- Batching correctly respects the split - a batch can only combine jobs assigned the same model (mixing models in one request doesn't make sense); non-matching jobs get safely requeued rather than dropped. Given batching is already ~0% in practice, this is correctness-for-later rather than something you'll see today.
+
+**Recommendation once you have a few hundred meals split across both:** if Flash-Lite's high-confidence rate and correction rate land within a few points of Flash's, switch `GEMINI_MODEL` to it and drop the A/B test - the free-quota difference (~4x) is too large to leave on the table for a marginal accuracy gap.
+
+## Previous version: race condition fix + diagnostics + prompt improvements
 
 **Real bug found and fixed:** the daily-limit check read the count of already-*logged* meals, but a meal only logs after the full Gemini round-trip (several seconds). With `concurrent_updates=True`, multiple rapid photos from the same user ran as concurrent handlers and could all pass the check before any of them wrote back - exactly matching your report of 6 requests through a 5-limit. Fixed with an atomic reserve/release pair (`storage.reserve_daily_slot`/`release_daily_slot`) - the check-and-increment now happens in one synchronous call with no `await` inside it, which asyncio guarantees can't be interleaved. Proved this two ways: reproduced the old buggy behavior standalone (6/6 succeeded), then confirmed the fix (exactly 5/6 succeed, matching the limit).
 

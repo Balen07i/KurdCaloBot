@@ -287,18 +287,26 @@ def _record_pacing_feedback(result: dict):
             logger.info("[ADAPTIVE_PACING] Sustained clean streak, interval eased to %.1fs", _current_interval)
 
 
-def _drain_batch() -> list[tuple]:
-    """Pulls the just-received first job plus up to BATCH_SIZE-1 MORE jobs
-    that are ALREADY sitting in the queue, without waiting for more to
-    arrive. Returns a list of (image_bytes, media_type, corrections, future)
-    tuples, length 1 to BATCH_SIZE."""
-    jobs = []
-    while len(jobs) < BATCH_SIZE:
+def _drain_batch(target_model: str) -> list[tuple]:
+    """Pulls up to BATCH_SIZE-1 MORE jobs that are ALREADY sitting in the
+    queue and match target_model, without waiting for more to arrive.
+    Jobs for a DIFFERENT model (from A/B testing) are put back rather
+    than combined - a batch is one request, so it can only use one model.
+    Returns a list of job tuples, length 0 to BATCH_SIZE-1."""
+    matched = []
+    requeue = []
+    while len(matched) < BATCH_SIZE - 1:
         try:
-            jobs.append(_queue.get_nowait())
+            job = _queue.get_nowait()
         except asyncio.QueueEmpty:
             break
-    return jobs
+        if job[3] == target_model:  # job[3] is the model field
+            matched.append(job)
+        else:
+            requeue.append(job)
+    for job in requeue:
+        _queue.put_nowait(job)
+    return matched
 
 
 async def _worker():
@@ -328,7 +336,8 @@ async def _worker():
                 )
             else:
                 logger.info("[BATCH_DIAG] Queue was empty when this job was picked up - no batching opportunity existed")
-            more_jobs = _drain_batch()
+            first_job_model = first_job[3]
+            more_jobs = _drain_batch(first_job_model)
             batch = [first_job] + more_jobs
             for _ in more_jobs:
                 _queue.task_done()  # first_job's task_done() happens in the outer finally
@@ -339,7 +348,7 @@ async def _worker():
                     len(batch),
                 )
                 _stats["circuit_breaker_short_circuits"] += len(batch)
-                for image_bytes, media_type, corrections, future in batch:
+                for image_bytes, media_type, corrections, model, future in batch:
                     if not future.done():
                         future.set_result({"status": "failed", "reason": "rate_limited"})
             else:
@@ -350,10 +359,10 @@ async def _worker():
                     await asyncio.sleep(wait)
 
                 if len(batch) == 1:
-                    image_bytes, media_type, corrections, future = batch[0]
+                    image_bytes, media_type, corrections, model, future = batch[0]
                     try:
                         result = await asyncio.to_thread(
-                            estimate_calories, image_bytes, media_type, corrections
+                            estimate_calories, image_bytes, media_type, corrections, model=model
                         )
                     except Exception:
                         logger.exception("[QUEUE] Unhandled exception from estimate_calories")
@@ -364,16 +373,16 @@ async def _worker():
                     if not future.done():
                         future.set_result(result)
                 else:
-                    logger.info("[BATCH] Processing %d photos in ONE Gemini request", len(batch))
+                    logger.info("[BATCH] Processing %d photos in ONE Gemini request (model: %s)", len(batch), first_job_model)
                     _stats["batched_requests_saved"] += len(batch) - 1
-                    images = [(img, mt) for img, mt, _, _ in batch]
+                    images = [(img, mt) for img, mt, _, _, _ in batch]
                     # All jobs in a batch necessarily share the same corrections
                     # snapshot timing-wise; using the first job's is fine since
                     # corrections change rarely relative to queue throughput.
                     corrections = batch[0][2]
                     try:
                         batch_result = await asyncio.to_thread(
-                            estimate_calories_batch, images, corrections
+                            estimate_calories_batch, images, corrections, model=first_job_model
                         )
                     except Exception:
                         logger.exception("[QUEUE] Unhandled exception from estimate_calories_batch")
@@ -383,19 +392,19 @@ async def _worker():
                     _record_pacing_feedback(batch_result)
 
                     if batch_result["status"] == "ok":
-                        for (_, _, _, future), result in zip(batch, batch_result["results"]):
+                        for (_, _, _, _, future), result in zip(batch, batch_result["results"]):
                             if not future.done():
                                 future.set_result(result)
                     else:
                         # Shared fate: the whole batch failed as one request.
-                        for _, _, _, future in batch:
+                        for _, _, _, _, future in batch:
                             if not future.done():
                                 future.set_result(batch_result)
 
         except Exception:
             logger.critical("[WORKER_CRASH] Unexpected error processing batch", exc_info=True)
             try:
-                for image_bytes, media_type, corrections, future in batch:
+                for image_bytes, media_type, corrections, model, future in batch:
                     if not future.done():
                         future.set_result({"status": "failed", "reason": "other"})
             except Exception:
@@ -414,11 +423,13 @@ def start_worker():
 
 
 async def submit_photo_job(
-    image_bytes: bytes, media_type: str, corrections: list[dict]
+    image_bytes: bytes, media_type: str, corrections: list[dict], model: str
 ) -> tuple[dict, int, int | None]:
     """
     Enqueues an ALREADY-OPTIMIZED, ALREADY-LOCALLY-VALIDATED photo for
-    analysis and waits for the result.
+    analysis and waits for the result. `model` is decided by the caller
+    (bot.py, via vision.pick_model_for_user) - lets A/B testing assign a
+    model per user before the photo ever reaches the queue.
     Returns (result_dict, queue_position, dhash_value) - the dhash is
     returned so callers (bot.py, for fingerprint logging) don't need to
     recompute it a second time; it was already computed here for the
@@ -452,7 +463,7 @@ async def submit_photo_job(
     queue_position = _queue.qsize()
 
     future = asyncio.get_running_loop().create_future()
-    await _queue.put((image_bytes, media_type, corrections, future))
+    await _queue.put((image_bytes, media_type, corrections, model, future))
     result = await future
 
     if result.get("status") == "ok":

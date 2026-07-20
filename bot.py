@@ -25,7 +25,7 @@ from nutrition import (
     calculate_targets,
 )
 import gemini_queue
-from vision import MODEL_NAME, check_image_locally, optimize_image
+from vision import MODEL_NAME, check_image_locally, optimize_image, pick_model_for_user
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -287,6 +287,20 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"💾 بیرگە: {s['cached_entries']} خواردن، {s['tracked_users']} بەکارهێنەر"
     )
 
+    ab_data = storage.get_model_ab_comparison()
+    if len(ab_data) > 1:  # only worth showing once there's real split data
+        ab_lines = ["\n\n🧪 بەراوردی A/B تاقیکردنەوە:"]
+        for row in ab_data:
+            total = row["total_meals"]
+            high_conf_pct = round(row["high_confidence_count"] / total * 100, 1) if total else 0
+            wrong_pct = round(row["wrong_feedback_count"] / total * 100, 1) if total else 0
+            ab_lines.append(
+                f"\n🤖 {row['model_used']}: {total} خواردن\n"
+                f"   🎯 دڵنیایی بەرز: {high_conf_pct}%\n"
+                f"   👎 هەڵە (feedback): {wrong_pct}%"
+            )
+        await update.message.reply_text("".join(ab_lines))
+
 
 async def history(update: Update, context: ContextTypes.DEFAULT_TYPE):
     meals = storage.get_recent_meals(update.effective_user.id, limit=10)
@@ -425,8 +439,9 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         corrections = storage.get_all_corrections()
+        model_for_user = pick_model_for_user(user_id)
         result, queue_position, dhash_value = await gemini_queue.submit_photo_job(
-            image_bytes, "image/jpeg", corrections
+            image_bytes, "image/jpeg", corrections, model_for_user
         )
 
         if queue_position > 0 and result.get("reason") != "queue_full":

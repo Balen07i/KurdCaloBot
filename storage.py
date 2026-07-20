@@ -60,7 +60,8 @@ def init_db():
     )
     _add_missing_columns(
         conn, "meals",
-        {"foods_json": "TEXT", "note_kurdish": "TEXT", "insight_kurdish": "TEXT", "dhash": "INTEGER"},
+        {"foods_json": "TEXT", "note_kurdish": "TEXT", "insight_kurdish": "TEXT",
+         "dhash": "INTEGER", "model_used": "TEXT"},
     )
 
     conn.execute(
@@ -227,8 +228,8 @@ def log_meal(user_id: int, result: dict, dhash_value: int | None = None) -> int:
         INSERT INTO meals (user_id, food_name_kurdish, food_name_english,
                             kcal, protein_g, carbs_g, fat_g, confidence,
                             matched_glossary, feedback, created_at,
-                            foods_json, note_kurdish, insight_kurdish, dhash)
-        VALUES (?, ?, '', ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?)
+                            foods_json, note_kurdish, insight_kurdish, dhash, model_used)
+        VALUES (?, ?, '', ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?)
         """,
         (
             user_id, food_summary,
@@ -238,13 +239,35 @@ def log_meal(user_id: int, result: dict, dhash_value: int | None = None) -> int:
             datetime.utcnow().isoformat(),
             json.dumps(foods, ensure_ascii=False),
             result.get("note_kurdish", ""), result.get("insight_kurdish", ""),
-            dhash_value,
+            dhash_value, result.get("model_used", ""),
         ),
     )
     conn.commit()
     meal_id = cur.lastrowid
     conn.close()
     return meal_id
+
+
+def get_model_ab_comparison() -> list[dict]:
+    """Per-model breakdown for A/B testing: count, avg confidence-is-high
+    rate, and correction rate. This is the real comparative data - can't
+    be gathered any other way without calling the live API myself."""
+    conn = _connect()
+    rows = conn.execute(
+        """
+        SELECT
+            model_used,
+            COUNT(*) AS total_meals,
+            SUM(CASE WHEN confidence = 'بەرز' THEN 1 ELSE 0 END) AS high_confidence_count,
+            SUM(CASE WHEN feedback = 'wrong' THEN 1 ELSE 0 END) AS wrong_feedback_count
+        FROM meals
+        WHERE model_used IS NOT NULL AND model_used != ''
+        GROUP BY model_used
+        """
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
 
 
 def set_feedback(meal_id: int, feedback: str):

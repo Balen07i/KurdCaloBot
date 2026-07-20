@@ -14,6 +14,7 @@
 # (attempts=1) and do our own below, so we have full control over backoff,
 # Retry-After handling, and logging.
 
+import hashlib
 import io
 import json
 import logging
@@ -44,10 +45,31 @@ client = genai.Client(
 MODEL_NAME = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
 # Flash-Lite (gemini-2.5-flash-lite) has ~4x the free-tier daily quota and
 # is significantly cheaper if you go paid later. Set GEMINI_MODEL=gemini-2.5-flash-lite
-# in Railway to test it - swap back by unsetting the var. Recommend running
-# a real side-by-side comparison on actual food photos before committing;
-# we don't have hard vision-quality data for Flash-Lite on this specific
-# task (food recognition + portion estimation), only its general benchmarks.
+# in Railway to test it - swap back by unsetting the var.
+
+# --- A/B testing infrastructure ---------------------------------------
+#
+# I can't call the live Gemini API from this environment to benchmark
+# Flash vs Flash-Lite myself, so instead of guessing, this collects real
+# comparative production data automatically. Set AB_TEST_MODEL to a
+# candidate model and AB_TEST_PERCENTAGE (0-100) to route that fraction
+# of USERS to it - split is deterministic per user_id (same user always
+# gets the same model), so comparisons aren't confounded by one user's
+# meals being split across both. Every meal logs which model produced it
+# (see storage.log_meal's model_used column), and /stats breaks down
+# confidence/correction rate by model - that's the real A/B data.
+AB_TEST_MODEL = os.environ.get("AB_TEST_MODEL", "")
+AB_TEST_PERCENTAGE = int(os.environ.get("AB_TEST_PERCENTAGE", "0"))
+
+
+def pick_model_for_user(user_id: int) -> str:
+    """Deterministic per-user split - stable across that user's requests."""
+    if not AB_TEST_MODEL or AB_TEST_PERCENTAGE <= 0:
+        return MODEL_NAME
+    if AB_TEST_PERCENTAGE >= 100:
+        return AB_TEST_MODEL
+    bucket = int(hashlib.sha256(str(user_id).encode()).hexdigest(), 16) % 100
+    return AB_TEST_MODEL if bucket < AB_TEST_PERCENTAGE else MODEL_NAME
 
 # IMPORTANT: gemini-2.5-flash spends part of max_output_tokens on internal
 # "thinking" before it writes the final answer. Too small a budget was the
@@ -436,7 +458,7 @@ visual ambiguity as described above. Macro rule: kcal ≈ protein_g*4 + \
 carbs_g*4 + fat_g*9 (rough ballpark). Totals must equal the sum of all items."""
 
 
-def _call_gemini(image_bytes: bytes, media_type: str, strict: bool, corrections: list[dict]) -> str:
+def _call_gemini(image_bytes: bytes, media_type: str, strict: bool, corrections: list[dict], model: str = MODEL_NAME) -> str:
     prompt_text = "Analyze every food in this meal photo."
     if strict:
         prompt_text += (
@@ -446,7 +468,7 @@ def _call_gemini(image_bytes: bytes, media_type: str, strict: bool, corrections:
         )
 
     response = client.models.generate_content(
-        model=MODEL_NAME,
+        model=model,
         contents=[
             types.Part.from_bytes(data=image_bytes, mime_type=media_type),
             prompt_text,
@@ -535,7 +557,8 @@ def _classify_and_log(exc: Exception, attempt: int) -> tuple[bool, float | None]
 
 
 def estimate_calories(
-    image_bytes: bytes, media_type: str = "image/jpeg", corrections: list[dict] | None = None
+    image_bytes: bytes, media_type: str = "image/jpeg", corrections: list[dict] | None = None,
+    model: str = MODEL_NAME,
 ) -> dict:
     """
     Makes EXACTLY ONE logical analysis per call (retries below are for
@@ -548,7 +571,8 @@ def estimate_calories(
     so the queue never holds full-size originals under a backlog.
 
     Returns a dict with a "status" key:
-      - "ok": normal result (see _finalize_result for full shape)
+      - "ok": normal result (see _finalize_result for full shape). Also
+        includes "model_used" for A/B attribution.
       - "no_food": Gemini determined the photo genuinely has no food
       - "failed": technical failure. Includes a "reason":
           - "rate_limited": all retries exhausted while being rate-limited
@@ -562,7 +586,7 @@ def estimate_calories(
     for attempt in range(1, MAX_ATTEMPTS + 1):
         strict = attempt > 1  # ask more firmly for clean JSON after the first miss
         try:
-            raw_text = _call_gemini(image_bytes, media_type, strict, corrections)
+            raw_text = _call_gemini(image_bytes, media_type, strict, corrections, model=model)
         except Exception as exc:
             is_retryable, suggested_wait = _classify_and_log(exc, attempt)
             last_failure_was_rate_limit = isinstance(exc, genai_errors.APIError) and exc.code == 429
@@ -589,7 +613,9 @@ def estimate_calories(
     if parsed is None:
         return {"status": "failed", "reason": "rate_limited" if last_failure_was_rate_limit else "other"}
 
-    return _finalize_result(parsed)
+    result = _finalize_result(parsed)
+    result["model_used"] = model
+    return result
 
 
 # --- Batch estimation ------------------------------------------------
@@ -633,7 +659,7 @@ the images were shown."""
 
 
 def _call_gemini_batch(
-    images: list[tuple[bytes, str]], strict: bool, corrections: list[dict]
+    images: list[tuple[bytes, str]], strict: bool, corrections: list[dict], model: str = MODEL_NAME
 ) -> str:
     contents = []
     for i, (image_bytes, media_type) in enumerate(images, start=1):
@@ -650,7 +676,7 @@ def _call_gemini_batch(
     contents.append(prompt_text)
 
     response = client.models.generate_content(
-        model=MODEL_NAME,
+        model=model,
         contents=contents,
         config=types.GenerateContentConfig(
             system_instruction=_build_batch_system_prompt(corrections, len(images)),
@@ -663,10 +689,12 @@ def _call_gemini_batch(
 
 
 def estimate_calories_batch(
-    images: list[tuple[bytes, str]], corrections: list[dict] | None = None
+    images: list[tuple[bytes, str]], corrections: list[dict] | None = None, model: str = MODEL_NAME
 ) -> dict:
     """
     images: list of (image_bytes, media_type) tuples, all already optimized.
+    All images in a batch share ONE model - callers (gemini_queue) must
+    only combine jobs that were assigned the same model for A/B testing.
 
     Returns a dict with a "status" key:
       - "ok": "results" is a list of finalized per-image results, same
@@ -683,7 +711,7 @@ def estimate_calories_batch(
     for attempt in range(1, MAX_ATTEMPTS + 1):
         strict = attempt > 1
         try:
-            raw_text = _call_gemini_batch(images, strict, corrections)
+            raw_text = _call_gemini_batch(images, strict, corrections, model=model)
         except Exception as exc:
             is_retryable, suggested_wait = _classify_and_log(exc, attempt)
             last_failure_was_rate_limit = isinstance(exc, genai_errors.APIError) and exc.code == 429
@@ -711,6 +739,8 @@ def estimate_calories_batch(
         return {"status": "failed", "reason": "rate_limited" if last_failure_was_rate_limit else "other"}
 
     finalized = [_finalize_result(r) for r in parsed["results"]]
+    for r in finalized:
+        r["model_used"] = model
     return {"status": "ok", "results": finalized}
 
 
