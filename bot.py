@@ -25,7 +25,7 @@ from nutrition import (
     calculate_targets,
 )
 import gemini_queue
-from vision import MODEL_NAME, check_image_locally, optimize_image, pick_model_for_user
+from vision import AB_TEST_MODEL, MODEL_NAME, check_image_locally, optimize_image, pick_model_for_user
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -257,7 +257,6 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     against your own Telegram user ID here.
     """
     s = gemini_queue.get_stats_summary()
-    circuit_line = "🔴 داخراوە (کورتکردنەوەی خێرا چالاکە)" if s["circuit_open"] else "🟢 کراوەیە"
     real_gemini_requests = s["successful_analyses"] + s["no_food_results"] + s["other_failures"] + s["rate_limited_failures"]
     await update.message.reply_text(
         f"📈 ئاماری کارکردن (تیمی {s['uptime_minutes']} خولەک):\n"
@@ -278,9 +277,12 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"❌ هەڵەی تر: {s['other_failures']}\n"
         f"🔁 قەڵبی سنووردار کراوە: {s['circuit_breaker_trips']} جار\n"
         f"⚡ کەمکردنەوەی خێرایی بۆ بەکارهێنەرانی خێرا: {s['rapid_fire_escalations']}\n\n"
-        f"⏱️ ئێستا خێرایی نێوان داواکاریەکان: {s['current_pacing_interval']}s\n"
-        f"⚡ کورتکردنەوەی خێرا: {circuit_line}\n"
-        f"📥 قەبارەی نۆرە: {s['queue_depth']}\n"
+        + "".join(
+            f"🎛️ {model}: خێرایی {health['pacing_interval']}s، "
+            f"{'🔴 داخراو' if health['circuit_open'] else '🟢 کراوە'}\n"
+            for model, health in s["per_model_health"].items()
+        )
+        + f"📥 قەبارەی نۆرە: {s['queue_depth']}\n"
         f"📏 تێکڕای قەبارەی نۆرە لە کاتی وەرگرتن: {s['avg_queue_depth_at_pickup']} "
         f"(زۆرترین: {s['queue_depth_max']})\n"
         f"🔀 هەلی batch کردن: {s['batching_opportunities']} لە کۆی {s['queue_depth_samples']}\n"
@@ -440,8 +442,9 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         corrections = storage.get_all_corrections()
         model_for_user = pick_model_for_user(user_id)
+        fallback_models = [m for m in {MODEL_NAME, AB_TEST_MODEL} if m and m != model_for_user]
         result, queue_position, dhash_value = await gemini_queue.submit_photo_job(
-            image_bytes, "image/jpeg", corrections, model_for_user
+            image_bytes, "image/jpeg", corrections, model_for_user, fallback_models
         )
 
         if queue_position > 0 and result.get("reason") != "queue_full":

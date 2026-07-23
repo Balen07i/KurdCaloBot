@@ -109,13 +109,51 @@ RAPID_FIRE_MESSAGE_KURDISH = (
 _queue: "asyncio.Queue | None" = None
 _worker_task: "asyncio.Task | None" = None
 
-_current_interval = BASE_INTERVAL
-_consecutive_clean_successes = 0
-_last_request_monotonic = 0.0
+# IMPORTANT: all pacing/circuit-breaker state below is PER-MODEL, not
+# global. Flash and Flash-Lite are separate quota allocations on Google's
+# side - a burst of 429s on one should never slow down or trip the
+# breaker for the other, and each model's own pacer should be free to
+# fire as soon as ITS interval allows, independent of when the other
+# model was last called. This is what makes dual-model pooling actually
+# increase combined throughput instead of just adding a fallback path.
+_current_interval: dict[str, float] = {}
+_consecutive_clean_successes: dict[str, int] = {}
+_last_request_monotonic: dict[str, float] = {}
 
-_consecutive_rate_limits = 0
-_circuit_open_until = 0.0
-_circuit_reopen_count = 0
+_consecutive_rate_limits: dict[str, int] = {}
+_circuit_open_until: dict[str, float] = {}
+_circuit_reopen_count: dict[str, int] = {}
+
+
+def _interval(model: str) -> float:
+    return _current_interval.setdefault(model, BASE_INTERVAL)
+
+
+def _is_circuit_open(model: str) -> bool:
+    return time.monotonic() < _circuit_open_until.get(model, 0.0)
+
+
+def select_available_model(preferred_model: str, fallback_models: list[str] | None = None) -> str:
+    """
+    Dual-model quota pooling: if the preferred model's circuit is open
+    (sustained real rate-limiting), automatically try any fallback model
+    whose circuit is closed instead of just queueing/failing. Falls back
+    to the preferred model if everything is unhealthy - no worse than
+    before, just no longer stuck on ONE model when a second is available
+    and healthy.
+    """
+    if not _is_circuit_open(preferred_model):
+        return preferred_model
+
+    for candidate in (fallback_models or []):
+        if candidate and candidate != preferred_model and not _is_circuit_open(candidate):
+            logger.info(
+                "[MODEL_FAILOVER] %s circuit is open, routing to healthy fallback %s instead",
+                preferred_model, candidate,
+            )
+            return candidate
+
+    return preferred_model  # everything unhealthy - no better option, behaves as before
 
 _last_user_request: dict[int, float] = {}
 _recent_submission_times: dict[int, list[float]] = {}
@@ -237,42 +275,43 @@ def mark_user_request(user_id: int):
             _recent_submission_times.pop(uid, None)
 
 
-def _record_pacing_feedback(result: dict):
-    """Adjusts the adaptive interval and circuit breaker state based on
-    what actually happened. Only ever called for REAL Gemini attempts -
-    synthetic circuit-breaker short-circuits must never reach this
-    function, or the circuit can re-justify staying open off its own
-    output (a real bug from a previous round, fixed and tested)."""
-    global _current_interval, _consecutive_clean_successes
-    global _consecutive_rate_limits, _circuit_open_until, _circuit_reopen_count
+def _record_pacing_feedback(result: dict, model: str):
+    """Adjusts the adaptive interval and circuit breaker state for THIS
+    model based on what actually happened. Only ever called for REAL
+    Gemini attempts - synthetic circuit-breaker short-circuits must never
+    reach this function, or the circuit can re-justify staying open off
+    its own output (a real bug from a previous round, fixed and tested)."""
 
     is_rate_limited = result.get("status") == "failed" and result.get("reason") == "rate_limited"
 
     if is_rate_limited:
         _stats["rate_limited_failures"] += 1
-        _consecutive_clean_successes = 0
-        _consecutive_rate_limits += 1
-        _current_interval = min(_current_interval * INTERVAL_INCREASE_FACTOR, MAX_INTERVAL)
+        _consecutive_clean_successes[model] = 0
+        _consecutive_rate_limits[model] = _consecutive_rate_limits.get(model, 0) + 1
+        new_interval = min(_interval(model) * INTERVAL_INCREASE_FACTOR, MAX_INTERVAL)
+        _current_interval[model] = new_interval
         logger.warning(
-            "[ADAPTIVE_PACING] Rate limit seen, interval increased to %.1fs (consecutive: %d)",
-            _current_interval, _consecutive_rate_limits,
+            "[ADAPTIVE_PACING] [%s] Rate limit seen, interval increased to %.1fs (consecutive: %d)",
+            model, new_interval, _consecutive_rate_limits[model],
         )
-        if _consecutive_rate_limits >= CIRCUIT_BREAKER_THRESHOLD and time.monotonic() >= _circuit_open_until:
+        if (_consecutive_rate_limits[model] >= CIRCUIT_BREAKER_THRESHOLD
+                and time.monotonic() >= _circuit_open_until.get(model, 0.0)):
+            reopen_count = _circuit_reopen_count.get(model, 0)
             cooldown = min(
-                CIRCUIT_BREAKER_COOLDOWN_SECONDS * (2 ** _circuit_reopen_count),
+                CIRCUIT_BREAKER_COOLDOWN_SECONDS * (2 ** reopen_count),
                 CIRCUIT_BREAKER_MAX_COOLDOWN_SECONDS,
             )
-            _circuit_open_until = time.monotonic() + cooldown
-            _circuit_reopen_count += 1
+            _circuit_open_until[model] = time.monotonic() + cooldown
+            _circuit_reopen_count[model] = reopen_count + 1
             _stats["circuit_breaker_trips"] += 1
             logger.error(
-                "[CIRCUIT_BREAKER] Opening circuit for %.0fs after %d consecutive REAL rate-limit "
-                "failures (reopen #%d)",
-                cooldown, _consecutive_rate_limits, _circuit_reopen_count,
+                "[CIRCUIT_BREAKER] [%s] Opening circuit for %.0fs after %d consecutive REAL "
+                "rate-limit failures (reopen #%d)",
+                model, cooldown, _consecutive_rate_limits[model], reopen_count + 1,
             )
     else:
-        _consecutive_rate_limits = 0
-        _circuit_reopen_count = 0
+        _consecutive_rate_limits[model] = 0
+        _circuit_reopen_count[model] = 0
         if result.get("status") == "ok":
             _stats["successful_analyses"] += 1
         elif result.get("status") == "no_food":
@@ -280,11 +319,12 @@ def _record_pacing_feedback(result: dict):
         else:
             _stats["other_failures"] += 1
 
-        _consecutive_clean_successes += 1
-        if _consecutive_clean_successes >= SUCCESS_STREAK_FOR_DECREASE:
-            _current_interval = max(_current_interval - INTERVAL_DECREASE_STEP, MIN_INTERVAL)
-            _consecutive_clean_successes = 0
-            logger.info("[ADAPTIVE_PACING] Sustained clean streak, interval eased to %.1fs", _current_interval)
+        streak = _consecutive_clean_successes.get(model, 0) + 1
+        if streak >= SUCCESS_STREAK_FOR_DECREASE:
+            _current_interval[model] = max(_interval(model) - INTERVAL_DECREASE_STEP, MIN_INTERVAL)
+            streak = 0
+            logger.info("[ADAPTIVE_PACING] [%s] Sustained clean streak, interval eased to %.1fs", model, _current_interval[model])
+        _consecutive_clean_successes[model] = streak
 
 
 def _drain_batch(target_model: str) -> list[tuple]:
@@ -310,7 +350,6 @@ def _drain_batch(target_model: str) -> list[tuple]:
 
 
 async def _worker():
-    global _last_request_monotonic
     logger.info("[QUEUE] Gemini request worker started")
     while True:
         try:
@@ -336,30 +375,39 @@ async def _worker():
                 )
             else:
                 logger.info("[BATCH_DIAG] Queue was empty when this job was picked up - no batching opportunity existed")
-            first_job_model = first_job[3]
-            more_jobs = _drain_batch(first_job_model)
+
+            preferred_model = first_job[3]
+            fallback_models = first_job[4]
+            more_jobs = _drain_batch(preferred_model)
             batch = [first_job] + more_jobs
             for _ in more_jobs:
                 _queue.task_done()  # first_job's task_done() happens in the outer finally
 
-            if time.monotonic() < _circuit_open_until:
+            # Dual-model quota pooling: pick whichever model is actually
+            # healthy RIGHT NOW, not just the preferred one - this is what
+            # lets a busy Flash quota get bailed out by a healthy
+            # Flash-Lite quota (or vice versa) automatically.
+            model = select_available_model(preferred_model, fallback_models)
+
+            if _is_circuit_open(model):
                 logger.info(
-                    "[CIRCUIT_BREAKER] Circuit open - short-circuiting %d job(s) without calling Gemini",
-                    len(batch),
+                    "[CIRCUIT_BREAKER] [%s] Circuit open (no healthy fallback either) - "
+                    "short-circuiting %d job(s) without calling Gemini",
+                    model, len(batch),
                 )
                 _stats["circuit_breaker_short_circuits"] += len(batch)
-                for image_bytes, media_type, corrections, model, future in batch:
+                for image_bytes, media_type, corrections, pref_model, fb_models, future in batch:
                     if not future.done():
                         future.set_result({"status": "failed", "reason": "rate_limited"})
             else:
-                elapsed = time.monotonic() - _last_request_monotonic
-                wait = _current_interval - elapsed
+                elapsed = time.monotonic() - _last_request_monotonic.get(model, 0.0)
+                wait = _interval(model) - elapsed
                 if wait > 0:
-                    logger.info("[QUEUE] Pacing: waiting %.1fs before next Gemini call", wait)
+                    logger.info("[QUEUE] [%s] Pacing: waiting %.1fs before next Gemini call", model, wait)
                     await asyncio.sleep(wait)
 
                 if len(batch) == 1:
-                    image_bytes, media_type, corrections, model, future = batch[0]
+                    image_bytes, media_type, corrections, pref_model, fb_models, future = batch[0]
                     try:
                         result = await asyncio.to_thread(
                             estimate_calories, image_bytes, media_type, corrections, model=model
@@ -368,43 +416,43 @@ async def _worker():
                         logger.exception("[QUEUE] Unhandled exception from estimate_calories")
                         result = {"status": "failed", "reason": "other"}
 
-                    _last_request_monotonic = time.monotonic()
-                    _record_pacing_feedback(result)
+                    _last_request_monotonic[model] = time.monotonic()
+                    _record_pacing_feedback(result, model)
                     if not future.done():
                         future.set_result(result)
                 else:
-                    logger.info("[BATCH] Processing %d photos in ONE Gemini request (model: %s)", len(batch), first_job_model)
+                    logger.info("[BATCH] Processing %d photos in ONE Gemini request (model: %s)", len(batch), model)
                     _stats["batched_requests_saved"] += len(batch) - 1
-                    images = [(img, mt) for img, mt, _, _, _ in batch]
+                    images = [(img, mt) for img, mt, _, _, _, _ in batch]
                     # All jobs in a batch necessarily share the same corrections
                     # snapshot timing-wise; using the first job's is fine since
                     # corrections change rarely relative to queue throughput.
                     corrections = batch[0][2]
                     try:
                         batch_result = await asyncio.to_thread(
-                            estimate_calories_batch, images, corrections, model=first_job_model
+                            estimate_calories_batch, images, corrections, model=model
                         )
                     except Exception:
                         logger.exception("[QUEUE] Unhandled exception from estimate_calories_batch")
                         batch_result = {"status": "failed", "reason": "other"}
 
-                    _last_request_monotonic = time.monotonic()
-                    _record_pacing_feedback(batch_result)
+                    _last_request_monotonic[model] = time.monotonic()
+                    _record_pacing_feedback(batch_result, model)
 
                     if batch_result["status"] == "ok":
-                        for (_, _, _, _, future), result in zip(batch, batch_result["results"]):
+                        for (_, _, _, _, _, future), result in zip(batch, batch_result["results"]):
                             if not future.done():
                                 future.set_result(result)
                     else:
                         # Shared fate: the whole batch failed as one request.
-                        for _, _, _, _, future in batch:
+                        for _, _, _, _, _, future in batch:
                             if not future.done():
                                 future.set_result(batch_result)
 
         except Exception:
             logger.critical("[WORKER_CRASH] Unexpected error processing batch", exc_info=True)
             try:
-                for image_bytes, media_type, corrections, model, future in batch:
+                for image_bytes, media_type, corrections, pref_model, fb_models, future in batch:
                     if not future.done():
                         future.set_result({"status": "failed", "reason": "other"})
             except Exception:
@@ -423,11 +471,18 @@ def start_worker():
 
 
 async def submit_photo_job(
-    image_bytes: bytes, media_type: str, corrections: list[dict], model: str
+    image_bytes: bytes, media_type: str, corrections: list[dict], model: str,
+    fallback_models: list[str] | None = None,
 ) -> tuple[dict, int, int | None]:
     """
     Enqueues an ALREADY-OPTIMIZED, ALREADY-LOCALLY-VALIDATED photo for
-    analysis and waits for the result. `model` is decided by the caller
+    analysis and waits for the result. `model` is the PREFERRED model
+    (decided by the caller, e.g. via vision.pick_model_for_user for A/B
+    testing). `fallback_models` are other models to automatically try if
+    the preferred one's quota is currently unhealthy (dual-model pooling
+    - see select_available_model) - pass e.g. [vision.MODEL_NAME,
+    vision.AB_TEST_MODEL] to let Flash and Flash-Lite cover for each
+    other's rate limits.
     (bot.py, via vision.pick_model_for_user) - lets A/B testing assign a
     model per user before the photo ever reaches the queue.
     Returns (result_dict, queue_position, dhash_value) - the dhash is
@@ -463,7 +518,7 @@ async def submit_photo_job(
     queue_position = _queue.qsize()
 
     future = asyncio.get_running_loop().create_future()
-    await _queue.put((image_bytes, media_type, corrections, model, future))
+    await _queue.put((image_bytes, media_type, corrections, model, fallback_models or [], future))
     result = await future
 
     if result.get("status") == "ok":
@@ -492,14 +547,20 @@ def get_stats_summary() -> dict:
         _stats["queue_depth_sum"] / _stats["queue_depth_samples"]
         if _stats["queue_depth_samples"] else 0.0
     )
+    per_model_health = {
+        model: {
+            "pacing_interval": round(_interval(model), 1),
+            "circuit_open": _is_circuit_open(model),
+        }
+        for model in set(_current_interval) | set(_circuit_open_until)
+    }
     return {
         **_stats,
         "uptime_minutes": round(uptime_seconds / 60, 1),
         "cache_hit_rate_pct": round(cache_hit_rate, 1),
-        "current_pacing_interval": round(_current_interval, 1),
         "queue_depth": _queue.qsize() if _queue else 0,
         "avg_queue_depth_at_pickup": round(avg_queue_depth, 2),
-        "circuit_open": time.monotonic() < _circuit_open_until,
+        "per_model_health": per_model_health,
         "cached_entries": len(_result_cache),
         "tracked_users": len(_last_user_request),
     }
